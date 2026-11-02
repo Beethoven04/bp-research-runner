@@ -64,6 +64,12 @@ def osm(country: str):
     n = Counter()
     with db.conn() as c:
         rule = email_rule(c, country)
+        # one read of what we already have: re-runs and big countries skip known places without a DB round trip
+        known_domains = {r["domain"] for r in c.execute(
+            "select domain from companies where tenant_id=%s and domain is not null", (config.TENANT,))}
+        known_places = {(r["n"], r["city"]) for r in c.execute(
+            "select lower(name) n, coalesce(city,'') city from companies where tenant_id=%s and domain is null and country=%s",
+            (config.TENANT, country))}
         for b, items in by_brand.items():
             tags = [t for _, t, _ in items]
             name = Counter(t.get("brand") for t in tags).most_common(1)[0][0]
@@ -88,17 +94,27 @@ def osm(country: str):
                 domain = None
             url = f"https://www.openstreetmap.org/{e['type']}/{e['id']}"
             city = t.get("addr:city") or t.get("addr:place")
+            mail = t.get("email") or t.get("contact:email")
+            if not domain and not (mail and "@" in mail):
+                n["no_site_no_email"] += 1      # nothing to check or contact: not stored
+                continue
+            if (domain and domain in known_domains) or (not domain and (name.lower(), city or "") in known_places):
+                n["places_seen"] += 1
+                continue
             cid, new = db.upsert_company(c, name=name, domain=domain, country=country, segment=OSM_KINDS[kind][0],
                                          source="osm", source_url=url, city=city, is_chain=False, email_rule=rule)
             if new:
                 db.evidence(c, cid, "osm_tags", f"{kind[0]}={kind[1]}", url,
                             "; ".join(f"{k}={v}" for k, v in t.items() if k in ("name", "website", "email", "contact:email", "addr:city")))
-                mail = t.get("email") or t.get("contact:email")
                 if mail and "@" in mail:
                     c.execute("insert into contacts(company_id,email,kind,source_url) values (%s,%s,'role',%s) "
                               "on conflict do nothing", (cid, mail.strip().lower(), url))
             n["places_new" if new else "places_seen"] += 1
             n["with_website"] += bool(domain)
+            if domain:
+                known_domains.add(domain)
+            else:
+                known_places.add((name.lower(), city or ""))
             if (n["places_new"] + n["places_seen"]) % 300 == 0:
                 c.commit()      # small commits: long transactions block the parallel site checks
         c.execute("insert into research_runs(tenant_id,stage,country,source,finished_at,counts) values (%s,'discover',%s,'osm',now(),%s)",
