@@ -1,0 +1,54 @@
+name: research
+# Started by n8n ("BP · Research runner") every hour. One run at a time; a new start waits for the running one.
+# Logs are public: every step prints counts only. Details stay in the database.
+on:
+  workflow_dispatch:
+    inputs:
+      minutes: {description: "worker minutes", required: true, default: "45"}
+      countries: {description: "country codes, comma separated", required: true,
+                  default: "SE,NO,FI,DK,DE,NL,BE,FR,ES,IT,PL,PT,BA,AL,IE,AT,CZ,GR,HR,RS,SI,SK,HU,RO,BG,LT,LV,EE,LU,CH,GB,ME,MK,XK"}
+      verify_minutes: {description: "email check minutes", required: true, default: "25"}
+concurrency: {group: research, cancel-in-progress: false}
+jobs:
+  batch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      REOON_KEY: ${{ secrets.REOON_KEY }}
+      SHEET_ID: ${{ secrets.SHEET_ID }}
+      GOOGLE_SA_JSON: ${{ secrets.GOOGLE_SA_JSON }}
+      SEARXNG_URL: http://localhost:8888
+      REACHER_URL: http://localhost:8080
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12", cache: pip, cache-dependency-path: research/requirements.txt}
+      - name: install
+        run: pip install -q -r research/requirements.txt
+      - name: start search engine (SearXNG) and email checker (Reacher)
+        run: |
+          sed -i "s/__SECRET__/$(openssl rand -hex 24)/" infra/searxng/settings.yml
+          docker run -d --name searxng -p 8888:8080 -v "$PWD/infra/searxng:/etc/searxng" searxng/searxng:latest >/dev/null
+          docker run -d --name reacher -p 8080:8080 -e RCH__HTTP_HOST=0.0.0.0 \
+            -e RCH__HELLO_NAME=${{ vars.HELLO_NAME }} -e RCH__FROM_EMAIL=${{ vars.FROM_EMAIL }} \
+            -e RCH__SMTP_TIMEOUT=40 -e RCH__WORKER__ENABLE=false reacherhq/backend:latest >/dev/null
+          for i in $(seq 1 60); do curl -s -o /dev/null "localhost:8888/search?q=test&format=json" && break; sleep 2; done
+          for i in $(seq 1 60); do curl -s -o /dev/null localhost:8080 && break; sleep 2; done
+      - name: research batch (find, fit check, range read)
+        working-directory: research
+        run: |
+          set +e; python -m research.worker --minutes "${{ inputs.minutes }}" --countries "${{ inputs.countries }}" > worker.log 2>&1; rc=$?
+          tail -1 worker.log
+          echo "### Research batch" >> $GITHUB_STEP_SUMMARY; tail -1 worker.log >> $GITHUB_STEP_SUMMARY; exit $rc
+      - name: email check (new primary contacts)
+        if: always()
+        working-directory: research
+        run: |
+          set +e; python -m research.verify_inline --minutes "${{ inputs.verify_minutes }}" > verify.log 2>&1; rc=$?
+          tail -1 verify.log
+          echo "### Email check" >> $GITHUB_STEP_SUMMARY; tail -1 verify.log >> $GITHUB_STEP_SUMMARY; exit $rc
+      - name: update Google Sheet
+        working-directory: research
+        if: always()
+        run: python -m research.sheet > sheet.log 2>&1 && echo "sheet updated" || (echo "sheet update failed"; exit 1)
