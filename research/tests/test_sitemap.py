@@ -28,7 +28,14 @@ FILLER = [f"https://shop.se/pages/info-{i}" for i in range(30)]
 
 
 def run(urls, invalid=0, known=(), products=None):
-    with mock.patch("usp.tree.sitemap_tree_for_homepage", return_value=_Tree(urls, invalid)):
+    import queue
+
+    def in_process(base, host, seconds=None):      # the real code uses a child process; tests stay in-process
+        q = queue.Queue()
+        R._sitemap_paths(base, host, q)
+        return q.get()
+    with mock.patch("usp.tree.sitemap_tree_for_homepage", return_value=_Tree(urls, invalid)), \
+            mock.patch.object(R, "_sitemap_paths_limited", in_process):
         return R.sitemap("https://shop.se", BRANDS, "shop.se", products or {}, known)
 
 
@@ -66,3 +73,15 @@ class Sitemap(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SitemapTimeout(unittest.TestCase):
+    def test_hanging_site_gives_no_claim(self):
+        with mock.patch.object(R, "_sitemap_paths_limited", return_value="sitemap timeout (600s)"):
+            hits, n, complete, note = R.sitemap("https://shop.se", BRANDS, "shop.se", {}, ())
+        self.assertEqual((hits, complete), ([], False))
+        self.assertIn("timeout", note)
+
+    def test_child_process_limit(self):
+        got = R._sitemap_paths_limited("https://10.255.255.1", "10.255.255.1", seconds=2)   # unroutable: hangs
+        self.assertIsInstance(got, str)

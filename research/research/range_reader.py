@@ -117,6 +117,47 @@ def generic(s, base, brands, host):
     return hits, (1 if pattern else 0)
 
 
+SITEMAP_SECONDS = 600     # a whole-site read may take long; past this, no claim (range stays unknown)
+
+
+def _sitemap_paths(base, host, q):
+    import logging
+    from usp.objects.sitemap import InvalidSitemap
+    from usp.tree import sitemap_tree_for_homepage
+    logging.getLogger("usp").setLevel(logging.CRITICAL)
+    try:
+        tree = sitemap_tree_for_homepage(base + "/")
+        invalid = sum(isinstance(x, InvalidSitemap) for x in tree.all_sitemaps())
+        paths = set()
+        for pg in tree.all_pages():
+            u = urlparse(pg.url)
+            if u.netloc.lower().removeprefix("www.") == host:
+                paths.add(B.norm(requests.utils.unquote(u.path)))
+            if len(paths) >= MAX_URLS:
+                break
+        q.put((invalid, paths))
+    except Exception as e:
+        q.put(f"sitemap error {type(e).__name__}")
+
+
+def _sitemap_paths_limited(base, host, seconds=None):
+    """Runs the sitemap read in a child process so a huge or hanging site can be stopped after SITEMAP_SECONDS."""
+    import multiprocessing as mp
+    import queue
+    ctx = mp.get_context("spawn")
+    q = ctx.Queue()
+    p = ctx.Process(target=_sitemap_paths, args=(base, host, q), daemon=True)
+    p.start()
+    try:
+        return q.get(timeout=seconds or SITEMAP_SECONDS)
+    except queue.Empty:
+        return f"sitemap timeout ({seconds or SITEMAP_SECONDS}s)"
+    finally:
+        if p.is_alive():
+            p.terminate()
+        p.join(5)
+
+
 def sitemap(base, brands, host, product_names=None, known=()):
     """Whole-site read from the sitemaps (ultimate-sitemap-parser). Returns (hits, n_urls, complete, note).
 
@@ -124,22 +165,10 @@ def sitemap(base, brands, host, product_names=None, known=()):
     the site (`known`, e.g. from on-site search) is also found here. Our own product names (e.g. "khamrah") only
     block a gap claim (kind=product_name); they never make a brand count as stocked.
     """
-    import logging
-    from usp.objects.sitemap import InvalidSitemap
-    from usp.tree import sitemap_tree_for_homepage
-    logging.getLogger("usp").setLevel(logging.CRITICAL)
-    try:
-        tree = sitemap_tree_for_homepage(base + "/")
-    except Exception as e:                      # network / parser failure: no claim
-        return [], 0, False, f"sitemap error {type(e).__name__}"
-    invalid = sum(isinstance(x, InvalidSitemap) for x in tree.all_sitemaps())
-    paths = set()
-    for pg in tree.all_pages():
-        u = urlparse(pg.url)
-        if u.netloc.lower().removeprefix("www.") == host:
-            paths.add(B.norm(requests.utils.unquote(u.path)))
-        if len(paths) >= MAX_URLS:
-            break
+    got = _sitemap_paths_limited(base, host)
+    if isinstance(got, str):                    # timeout / network / parser failure: no claim
+        return [], 0, False, got
+    invalid, paths = got
     if len(paths) < 30:
         return [], len(paths), False, f"sitemap too small ({len(paths)} urls)"
     blob = " | ".join(sorted(paths))
