@@ -71,3 +71,13 @@ jobs:
         working-directory: research
         if: always() && matrix.shard == 0
         run: python -m research.sheet > sheet.log 2>&1 && echo "sheet updated" || (echo "sheet update failed"; exit 1)
+  next:
+    # GitHub's hourly schedule skips most hours (3 Nov 2026: 1 run in 9 hours), so every run starts the next one.
+    # The schedule stays as a backup. Stop the chain: repo variable CHAIN=off (Settings > Variables).
+    needs: batch
+    if: always() && vars.CHAIN != 'off'
+    runs-on: ubuntu-latest
+    permissions: {actions: write}
+    steps:
+      - run: gh workflow run research.yml -R "$GITHUB_REPOSITORY"
+        env: {GH_TOKEN: "${{ github.token }}"}
