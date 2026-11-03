@@ -16,7 +16,7 @@ from . import config, db, verify
 from .verify_batch import pending
 
 
-def main(minutes, limit, countries=(), shard=(0, 1)):
+def main(minutes, limit, countries=(), shard=(0, 1), threads=6):
     end = time.time() + minutes * 60
     with db.conn() as c:
         emails = pending(c, limit * shard[1], countries)
@@ -53,4 +53,4 @@ if __name__ == "__main__":
     if not config.REACHER_URL:
         raise SystemExit("REACHER_URL not set")
     i, n = (int(x) for x in a.shard.split("/"))
-    main(a.minutes, a.limit, [x.strip().upper() for x in a.focus.split(",") if x.strip()], (i, n))
+    main(a.minutes, a.limit, [x.strip().upper() for x in a.focus.split(",") if x.strip()], (i, n), a.threads)

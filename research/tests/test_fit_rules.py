@@ -100,3 +100,17 @@ class PhoneCountryTest(__import__("unittest").TestCase):
     def test_real_numbers(self):
         self.assertEqual(dict(fit.country_hints("tel 0031 20 555 1234")), {"NL": 1})
         self.assertEqual(dict(fit.country_hints("+1 312 555 0123")), {"US": 1})
+
+
+class FreeMailTest(__import__("unittest").TestCase):
+    def test_rules(self):
+        from research.emails import free_mail_ok
+        self.assertTrue(free_mail_ok("laparfumeriebordelaise@gmail.com"))
+        self.assertTrue(free_mail_ok("contacthemain@gmail.com"))
+        self.assertFalse(free_mail_ok("torben@gmail.com"))       # placeholder in a contact form
+        self.assertFalse(free_mail_ok("your.name@gmail.com"))
+        self.assertFalse(free_mail_ok("info@parfum.se"))           # not free-mail
+        self.assertTrue(free_mail_ok("apoav@t-online.de"))          # real pharmacy address (short is fine)
+        self.assertTrue(free_mail_ok("jane.brandejska@gmail.com"))  # real person-named shop address
+        self.assertFalse(free_mail_ok("testparfym@gmail.com"))
+

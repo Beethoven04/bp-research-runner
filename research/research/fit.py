@@ -16,7 +16,7 @@ from . import brands as B
 from . import db
 from .crawl import UA
 from .domains import domain_of
-from .emails import extract_emails, is_role
+from .emails import FREE_MAIL, extract_emails, free_mail_ok, is_role
 
 PERFUME = re.compile(
     r"\b(parfym\w*|parfyme\w*|parfum\w*|perfume\w*|profum\w*|perfum\w*|hajuve\w*|eau de (parfum|toilette)|"
@@ -338,8 +338,14 @@ def check(company: dict, our_brands: list, arabic: list):
         for e, u in mine.items():
             if not BAD_LOCALS.search(e.split("@")[0]):
                 out["contacts"].setdefault(e, u)
+        if not out["contacts"]:
+            # free-mail address the shop publishes as its contact (gmail...), only when no own-domain one exists
+            for e, u in other.items():
+                if free_mail_ok(e) and not BAD_LOCALS.search(e.split("@")[0]):
+                    out["contacts"].setdefault(e, u)
         for e, u in list(other.items())[:5]:
-            out["evidence"].append(("other_domain_email", e, u, "not on the shop's own domain; not used"))
+            if e not in out["contacts"]:
+                out["evidence"].append(("other_domain_email", e, u, "not on the shop's own domain; not used"))
     out["real_domain"] = real
     country_unclear = False
     if not cc and not lang_decides:
@@ -396,7 +402,7 @@ def save(c, company: dict, res: dict, our_names=(), rules=None):
                   (cid, h["brand"], h["brand"] in res.get("_our_names", ()), h["kind"], h["url"], h["snippet"]))
     for e, url in res["contacts"].items():
         c.execute("insert into contacts(company_id,email,kind,source_url) values (%s,%s,%s,%s) on conflict do nothing",
-                  (cid, e, "role" if is_role(e) else "named", url))
+                  (cid, e, "role" if is_role(e) or e.split("@")[1] in FREE_MAIL else "named", url))
     sells_arabic = True if res.get("brand_hits") else None
     name = res.get("name") if company.get("first_source") == "search" else None
     c.execute("update companies set email_rule=%s where id=%s", (rule, cid))

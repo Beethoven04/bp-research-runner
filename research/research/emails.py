@@ -18,6 +18,40 @@ ROLE_LOCALS = {
     "inkop", "innkjop", "indkob", "osto", "purchasing", "purchase", "buying", "buyer", "order", "orders", "shop",
     "store", "butik", "butikk", "webshop", "kundtjanst", "kundeservice", "asiakaspalvelu", "wholesale", "b2b",
 }
+# Free-mail providers: a small shop may publish one of these as its business address. Used only when the shop's own
+# site publishes it and no own-domain address exists (decided 3 Nov 2026, Louai). Stored as kind 'role'.
+FREE_MAIL = {
+    "gmail.com", "googlemail.com", "hotmail.com", "hotmail.co.uk", "hotmail.fr", "hotmail.it", "hotmail.es",
+    "hotmail.de", "hotmail.se", "hotmail.nl", "hotmail.be", "outlook.com", "outlook.fr", "outlook.es", "outlook.it",
+    "outlook.de", "live.com", "live.fr", "live.nl", "live.be", "live.se", "live.dk", "live.it", "msn.com", "yahoo.com",
+    "yahoo.fr", "yahoo.it", "yahoo.es", "yahoo.de", "yahoo.co.uk", "ymail.com", "icloud.com", "me.com", "aol.com",
+    "gmx.de", "gmx.net", "gmx.at", "gmx.ch", "web.de", "t-online.de", "orange.fr", "free.fr", "wanadoo.fr", "sfr.fr",
+    "laposte.net", "libero.it", "virgilio.it", "alice.it", "tiscali.it", "telenet.be", "skynet.be", "ziggo.nl",
+    "kpnmail.nl", "home.nl", "planet.nl", "abv.bg", "mail.bg", "wp.pl", "o2.pl", "onet.pl", "interia.pl",
+    "seznam.cz", "centrum.cz", "azet.sk", "freemail.hu", "citromail.hu", "yandex.com", "mail.ru", "proton.me",
+    "protonmail.com", "online.no", "telia.com", "bredband.net", "spray.se", "jubii.dk", "mail.dk", "sapo.pt",
+    "hotmail.dk", "hotmail.no", "outlook.dk", "eircom.net", "btinternet.com", "sky.com", "inbox.lv", "inbox.lt",
+    "mail.ee", "zoho.com", "zohomail.eu",
+}
+
+
+def free_mail_ok(email: str) -> bool:
+    """Free-mail address usable as a shop contact (only for the free-mail fallback in fit.check)? Rejects form
+    placeholders: a bare common first name (torben@gmail.com, louise@gmail.com) or test/your/example/name locals.
+    3 Nov 2026: a first version (any 1-7 letter local) also hit real addresses like apoav@t-online.de; replaced."""
+    local, dom = email.lower().split("@", 1)
+    if dom not in FREE_MAIL:
+        return False
+    if local in PLACEHOLDER_NAMES:
+        return False
+    return not re.match(r"(test|your|example|sample|demo|name|email|e-?mail|mustermann)", local)
+
+
+PLACEHOLDER_NAMES = {"john", "jane", "johndoe", "janedoe", "max", "maxmustermann", "torben", "louise", "sophie",
+                     "anna", "peter", "mario", "maria", "jean", "pierre", "marie", "jan", "lars", "erik", "info",
+                     "contact", "mail", "user", "admin", "someone", "me", "you"}
+
+
 JUNK_DOMAINS = ("example.", "sentry", "wixpress", "domain.com", "email.com", "company.com", "acme.com", "yourdomain")
 
 
