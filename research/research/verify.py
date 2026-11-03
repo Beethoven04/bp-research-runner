@@ -4,6 +4,7 @@ Verdicts: valid | invalid | risky (catch-all / unconfirmable) | unknown (no veri
 Every answer is cached in data/research_cache/verify.json so an address is never checked twice.
 """
 import json
+import threading
 import time
 
 import dns.resolver
@@ -17,8 +18,20 @@ _cache = json.loads(_CACHE_FILE.read_text()) if _CACHE_FILE.exists() else {}
 _mx_cache = {}
 
 
+_lock = threading.Lock()
+
+
 def _save():
-    _CACHE_FILE.write_text(json.dumps(_cache, indent=1, sort_keys=True))
+    with _lock:            # verify() runs in parallel threads (verify_inline, 3 Nov 2026)
+        for _ in range(5):     # another thread may add a key while we copy
+            try:
+                data = json.dumps(dict(_cache), indent=1, sort_keys=True)
+                break
+            except RuntimeError:
+                time.sleep(0.05)
+        else:
+            return
+        _CACHE_FILE.write_text(data)
 
 
 def mx(domain: str):

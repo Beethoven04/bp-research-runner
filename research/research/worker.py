@@ -41,11 +41,20 @@ def feed(c):
               "where status in ('fit','review') and range_status='todo' and domain is not null on conflict do nothing")
 
 
+FOCUS = []    # country codes; when set, every lane only takes jobs of these countries (--focus DE)
+
+
 def pick(c, kinds, n):
-    rows = c.execute("update jobs set status='running', attempts=attempts+1, updated_at=now() where id in ("
-                     " select id from jobs where status='queued' and run_after<=now() and kind = any(%s) "
-                     " order by priority desc, id limit %s for update skip locked) returning *", (kinds, n)).fetchall()
-    return rows
+    if not FOCUS:
+        return c.execute("update jobs set status='running', attempts=attempts+1, updated_at=now() where id in ("
+                         " select id from jobs where status='queued' and run_after<=now() and kind = any(%s) "
+                         " order by priority desc, id limit %s for update skip locked) returning *", (kinds, n)).fetchall()
+    return c.execute("update jobs set status='running', attempts=attempts+1, updated_at=now() where id in ("
+                     " select j.id from jobs j left join companies co on co.id = (j.payload->>'id')::bigint "
+                     " where j.status='queued' and j.run_after<=now() and j.kind = any(%s) "
+                     " and coalesce(j.payload->>'country', co.country) = any(%s) "
+                     " order by j.priority desc, j.id limit %s for update of j skip locked) returning *",
+                     (kinds, FOCUS, n)).fetchall()
 
 
 def finish(job, err=None):
@@ -213,7 +222,8 @@ def run(minutes: float, countries, threads: int = 12):
     ctx = Ctx()
     stats, lock = {"done": 0, "errors": 0}, threading.Lock()
     with db.conn() as c, c.transaction():
-        c.execute("update jobs set status='queued' where status='running'")   # recover after a crash
+        # recover after a crash; only old jobs, because parallel runners (shards) share the queue
+        c.execute("update jobs set status='queued' where status='running' and updated_at < now() - interval '2 hours'")
         plan(c, countries)
     lanes = [threading.Thread(target=_lane, args=(["discover_osm"], 1, end, ctx, stats, lock)),
              threading.Thread(target=_lane, args=(["discover_search"], 1, end, ctx, stats, lock)),
@@ -224,7 +234,7 @@ def run(minutes: float, countries, threads: int = 12):
     for t in lanes:
         t.join()
     with db.conn() as c, c.transaction():
-        c.execute("update jobs set status='queued' where status='running'")
+        # every lane waited for its own jobs, so nothing of this runner is still running here
         c.execute("insert into research_runs(tenant_id,stage,finished_at,counts) values (%s,'worker_batch',now(),%s)",
                   (config.TENANT, json.dumps(stats)))
     return stats
@@ -235,5 +245,7 @@ if __name__ == "__main__":
     ap.add_argument("--minutes", type=float, default=45)
     ap.add_argument("--countries", default=",".join(PLAN_COUNTRIES[:13]))
     ap.add_argument("--threads", type=int, default=12)
+    ap.add_argument("--focus", default="", help="only take jobs of these countries, e.g. DE")
     a = ap.parse_args()
+    FOCUS[:] = [x.strip().upper() for x in a.focus.split(",") if x.strip()]
     print(json.dumps(run(a.minutes, [x.strip().upper() for x in a.countries.split(",") if x.strip()], a.threads)))

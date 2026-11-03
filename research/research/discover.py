@@ -129,6 +129,8 @@ def search_queries(c, country: str):
     qs = [p.format(country_name=cname) for p in conf.get("phrases", [])]
     for b in db.cfg(c, "search_brands") or []:
         qs += [t.format(brand=b, country_name=cname) for t in conf.get("brand_templates", [])]
+    for city in conf.get("cities", []):        # city x shop type: finds shops that rank only locally
+        qs += [t.format(city=city, country_name=cname) for t in conf.get("city_templates", [])]
     return conf.get("lang", "en"), qs
 
 

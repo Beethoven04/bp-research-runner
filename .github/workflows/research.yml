@@ -7,20 +7,25 @@ on:
     - cron: "17 * * * *"
   workflow_dispatch:
     inputs:
-      minutes: {description: "worker minutes", required: true, default: "45"}
+      minutes: {description: "worker minutes (running jobs finish after this, ~+10 min)", required: true, default: "35"}
       countries: {description: "country codes, comma separated", required: true,
                   default: "SE,NO,FI,DK,DE,NL,BE,FR,ES,IT,PL,PT,BA,AL,IE,AT,CZ,GR,HR,RS,SI,SK,HU,RO,BG,LT,LV,EE,LU,CH,GB,ME,MK,XK"}
       verify_minutes: {description: "email check minutes", required: true, default: "25"}
-concurrency: {group: research, cancel-in-progress: false}
+      focus: {description: "only work on these countries (empty = all)", required: false, default: "DE"}
+concurrency: {group: research, cancel-in-progress: false}   # one run (4 shards) at a time
 jobs:
   batch:
     runs-on: ubuntu-latest
     timeout-minutes: 170
+    strategy:
+      fail-fast: false
+      matrix: {shard: [0, 1, 2, 3]}   # 4 runners share one job queue (rows are locked, no double work)
     env:
       DATABASE_URL: ${{ secrets.DATABASE_URL }}
       REOON_KEY: ${{ secrets.REOON_KEY }}
       SHEET_ID: ${{ secrets.SHEET_ID }}
       GOOGLE_SA_JSON: ${{ secrets.GOOGLE_SA_JSON }}
+      FOCUS: ${{ github.event_name == 'schedule' && 'DE' || inputs.focus }}   # Germany first (Louai, 3 Nov 2026)
       SEARXNG_URL: http://localhost:8888
       REACHER_URL: http://localhost:8080
     steps:
@@ -42,7 +47,7 @@ jobs:
         timeout-minutes: 60
         working-directory: research
         run: |
-          set +e; python -m research.worker --minutes "${{ inputs.minutes || '45' }}" --countries "${{ inputs.countries || 'SE,NO,FI,DK,DE,NL,BE,FR,ES,IT,PL,PT,BA,AL,IE,AT,CZ,GR,HR,RS,SI,SK,HU,RO,BG,LT,LV,EE,LU,CH,GB,ME,MK,XK' }}" > worker.log 2>&1; rc=$?
+          set +e; python -m research.worker --minutes "${{ inputs.minutes || '35' }}" --countries "${{ inputs.countries || 'SE,NO,FI,DK,DE,NL,BE,FR,ES,IT,PL,PT,BA,AL,IE,AT,CZ,GR,HR,RS,SI,SK,HU,RO,BG,LT,LV,EE,LU,CH,GB,ME,MK,XK' }}" --focus "$FOCUS" > worker.log 2>&1; rc=$?
           tail -1 worker.log
           grep -oE "[A-Za-z_.]+(Error|Exception|Timeout)\b" worker.log | sort | uniq -c | sort -rn | head -5   # class names only
           echo "### Research batch" >> $GITHUB_STEP_SUMMARY; tail -1 worker.log >> $GITHUB_STEP_SUMMARY; exit $rc
@@ -51,12 +56,12 @@ jobs:
         if: always()
         working-directory: research
         run: |
-          set +e; python -m research.verify_inline --minutes "${{ inputs.verify_minutes || '25' }}" > verify.log 2>&1; rc=$?
+          set +e; python -m research.verify_inline --minutes "${{ inputs.verify_minutes || '25' }}" --focus "$FOCUS" --shard "${{ matrix.shard }}/4" > verify.log 2>&1; rc=$?
           tail -1 verify.log
           grep -oE "[A-Za-z_.]+(Error|Exception|Timeout)\b" verify.log | sort | uniq -c | sort -rn | head -5   # class names only
           echo "### Email check" >> $GITHUB_STEP_SUMMARY; tail -1 verify.log >> $GITHUB_STEP_SUMMARY; exit $rc
       - name: update Google Sheet
         timeout-minutes: 15
         working-directory: research
-        if: always()
+        if: always() && matrix.shard == 0
         run: python -m research.sheet > sheet.log 2>&1 && echo "sheet updated" || (echo "sheet update failed"; exit 1)

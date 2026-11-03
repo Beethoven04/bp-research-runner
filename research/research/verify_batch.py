@@ -11,12 +11,13 @@ from . import ci, config, db
 from .verify import _cache
 
 
-def pending(c, limit):
+def pending(c, limit, countries=()):
     return [r["email"] for r in c.execute(
         "select k.email from contacts k join companies c on c.id=k.company_id "
         "where k.is_primary and k.verdict='unchecked' and coalesce(k.mx_provider,'') not in ('','none') "
-        "and c.status in ('fit','review') and c.tenant_id=%s order by c.priority desc limit %s",
-        (config.TENANT, limit)).fetchall()]
+        "and c.status in ('fit','review') and c.tenant_id=%s and (cardinality(%s::text[])=0 or c.country=any(%s)) "
+        "order by c.priority desc, k.email limit %s",
+        (config.TENANT, list(countries), list(countries), limit)).fetchall()]
 
 
 def write_back(c):

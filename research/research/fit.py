@@ -331,6 +331,15 @@ def check(company: dict, our_brands: list, arabic: list):
                 continue
             if ed.endswith(real) or ed.endswith(dom) or (ed.split(".")[0] == base):
                 out["contacts"].setdefault(e, url)
+    if not out["contacts"]:
+        # second pass: legal pages (terms, privacy, imprint, Shopify /policies/...), added 3 Nov 2026
+        from . import contacts_more
+        mine, other, _ = contacts_more.find(dom, real, html, final, s)
+        for e, u in mine.items():
+            if not BAD_LOCALS.search(e.split("@")[0]):
+                out["contacts"].setdefault(e, u)
+        for e, u in list(other.items())[:5]:
+            out["evidence"].append(("other_domain_email", e, u, "not on the shop's own domain; not used"))
     out["real_domain"] = real
     country_unclear = False
     if not cc and not lang_decides:
