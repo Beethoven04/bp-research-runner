@@ -1,5 +1,6 @@
 """Verify unchecked primary contacts on the machine that runs the worker (GitHub Actions runner with a local Reacher
-container, outbound port 25 allowed). The database is the cache: only verdict='unchecked' rows are sent.
+container, outbound port 25 allowed). The database is the cache: only verdict='unchecked' rows are sent, plus
+'unknown' rows again after 3 hours (max 3 checks), usually from another runner IP (greylisting).
 
 Run: REACHER_URL=http://localhost:8080 python -m research.verify_inline --minutes 30
 Logs print counts only (the runner repo is public): never an address.
@@ -29,8 +30,8 @@ def main(minutes, limit, countries=(), shard=(0, 1)):
             return
         v = verify.verify(e, use_reoon_on_unknown=True, force=True)
         with db.conn() as c, c.transaction():
-            c.execute("update contacts set verdict=%s, verdict_detail=%s, catch_all=%s, checked_at=now() "
-                      "where email=%s and verdict='unchecked'",
+            c.execute("update contacts set verdict=%s, verdict_detail=%s, catch_all=%s, checked_at=now(), "
+                      "checks=checks+1 where email=%s and verdict in ('unchecked','unknown')",
                       (v["verdict"], (v.get("detail") or "")[:500], v.get("catch_all"), e))
         with lock:
             n[v["verdict"]] += 1

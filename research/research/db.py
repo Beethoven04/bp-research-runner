@@ -1,4 +1,5 @@
 """Database access (Postgres / Supabase). Every company fact is written together with its evidence."""
+import os
 from contextlib import contextmanager
 
 import psycopg
@@ -19,7 +20,10 @@ def _connect():
     import time
     for i in range(10):
         try:
-            return psycopg.connect(_url(), row_factory=dict_row, connect_timeout=20)
+            url, kw = _url(), {}
+            if os.environ.get("DB_POOL") == "transaction":   # many parallel runners: Supavisor transaction mode
+                url, kw = url.replace(".pooler.supabase.com:5432", ".pooler.supabase.com:6543"), {"prepare_threshold": None}
+            return psycopg.connect(url, row_factory=dict_row, connect_timeout=20, **kw)
         except psycopg.OperationalError:
             if i == 9:
                 raise

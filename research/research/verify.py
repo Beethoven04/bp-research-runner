@@ -1,4 +1,5 @@
-"""Verification chain: syntax → MX (DNS) → Reacher SMTP check (self-hosted) → Reoon (optional second opinion).
+"""Verification chain: syntax → MX (DNS) → Reacher SMTP check (self-hosted) → Truemail SMTP check (self-hosted,
+open source, only when Reacher has no answer) → Reoon (free credits, last opinion).
 
 Verdicts: valid | invalid | risky (catch-all / unconfirmable) | unknown (no verifier answered) | no_mx
 Every answer is cached in data/research_cache/verify.json so an address is never checked twice.
@@ -6,6 +7,7 @@ Every answer is cached in data/research_cache/verify.json so an address is never
 import json
 import threading
 import time
+import uuid
 
 import dns.resolver
 import requests
@@ -66,6 +68,29 @@ def reacher(email: str):
         return {"error": str(e)[:160]}
 
 
+def truemail(email: str):
+    """Truemail answers only "accepted or not". It cannot see a catch-all, so a random address on the same domain is
+    tried too: both accepted = catch-all (risky); real accepted and random refused = valid. A refusal is not trusted
+    as invalid (blocked IP, greylisting look the same), so it stays unknown."""
+    if not config.TRUEMAIL_URL:
+        return None
+    def ask(addr):
+        r = requests.get(config.TRUEMAIL_URL.rstrip("/"), params={"email": addr}, timeout=90,
+                         headers={"Authorization": config.TRUEMAIL_TOKEN or "", "Accept": "application/json"})
+        r.raise_for_status()
+        return r.json()
+    try:
+        real = ask(email)
+        if not real.get("success"):
+            return {"verdict": "unknown", "detail": f"truemail: refused {list((real.get('errors') or {}).keys())}"}
+        probe = ask(f"zq{uuid.uuid4().hex[:10]}@{email.split('@')[1]}")
+        if probe.get("success"):
+            return {"verdict": "risky", "catch_all": True, "detail": "truemail: accepted, domain accepts anything"}
+        return {"verdict": "valid", "catch_all": False, "detail": "truemail: accepted, random address refused"}
+    except (requests.RequestException, ValueError) as e:
+        return {"verdict": "unknown", "detail": f"truemail error: {str(e)[:100]}"}
+
+
 def reoon(email: str):
     if not config.REOON_KEY:
         return None
@@ -103,6 +128,13 @@ def verify(email: str, use_reoon_on_unknown: bool = True, force: bool = False) -
             detail = f"reacher: {reach}, catch_all={catch_all}, deliverable={smtp.get('is_deliverable')}"
             verdict = {"safe": "valid", "invalid": "invalid", "risky": "risky"}.get(reach, "unknown")
             res["catch_all"] = catch_all
+    if verdict == "unknown":
+        t = truemail(email)
+        if t is not None:
+            detail += " | " + t["detail"]
+            if t["verdict"] != "unknown":
+                verdict = t["verdict"]
+                res["catch_all"] = t.get("catch_all")
     if verdict == "unknown" and use_reoon_on_unknown:
         o = reoon(email)
         if o is not None:

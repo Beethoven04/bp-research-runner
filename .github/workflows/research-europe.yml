@@ -1,0 +1,74 @@
+name: research Europe
+# Agent 2 of 2 (Louai, 3 Nov 2026): every country except Germany, 2 runners. Agent 1 = research.yml (Germany).
+# Runs every hour on GitHub's own schedule (the n8n server is down, decided 3 Nov 2026), or by hand.
+# One run at a time; a new start waits for the running one.
+# Logs are public: every step prints counts only. Details stay in the database.
+on:
+  schedule:
+    - cron: "47 * * * *"
+  workflow_dispatch:
+    inputs:
+      minutes: {description: "worker minutes (running jobs finish after this, ~+10 min)", required: true, default: "35"}
+      countries: {description: "country codes, comma separated", required: true,
+                  default: "SE,NO,FI,DK,NL,BE,FR,ES,IT,PL,PT,BA,AL,IE,AT,CZ,GR,HR,RS,SI,SK,HU,RO,BG,LT,LV,EE,LU,CH,GB,ME,MK,XK"}
+      verify_minutes: {description: "email check minutes", required: true, default: "25"}
+concurrency: {group: research-eu, cancel-in-progress: false}   # one Europe run (2 shards) at a time
+jobs:
+  batch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 170
+    strategy:
+      fail-fast: false
+      matrix: {shard: [0, 1]}   # 2 runners share one job queue (rows are locked, no double work)
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      REOON_KEY: ${{ secrets.REOON_KEY }}
+      SHEET_ID: ${{ secrets.SHEET_ID }}
+      GOOGLE_SA_JSON: ${{ secrets.GOOGLE_SA_JSON }}
+      FOCUS: ${{ inputs.countries || 'SE,NO,FI,DK,NL,BE,FR,ES,IT,PL,PT,BA,AL,IE,AT,CZ,GR,HR,RS,SI,SK,HU,RO,BG,LT,LV,EE,LU,CH,GB,ME,MK,XK' }}   # the lanes only take jobs of these countries
+      SHARDS: 2
+      DB_POOL: transaction   # many parallel runners: Supabase transaction pooler
+      SEARXNG_URL: http://localhost:8888
+      REACHER_URL: http://localhost:8080
+      TRUEMAIL_URL: http://localhost:9292
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12", cache: pip, cache-dependency-path: research/requirements.txt}
+      - name: install
+        run: pip install -q -r research/requirements.txt
+      - name: start search engine (SearXNG) and email checkers (Reacher, Truemail)
+        run: |
+          export TRUEMAIL_TOKEN=$(openssl rand -hex 16); echo "TRUEMAIL_TOKEN=$TRUEMAIL_TOKEN" >> $GITHUB_ENV
+          docker run -d --name truemail -p 9292:9292 -e VERIFIER_EMAIL=${{ vars.FROM_EMAIL }} \
+            -e VERIFIER_DOMAIN=${{ vars.HELLO_NAME }} -e ACCESS_TOKENS=$TRUEMAIL_TOKEN truemail/truemail-rack:v0.10.0 >/dev/null
+          sed -i "s/__SECRET__/$(openssl rand -hex 24)/" infra/searxng/settings.yml
+          docker run -d --name searxng -p 8888:8080 -v "$PWD/infra/searxng:/etc/searxng" searxng/searxng:latest >/dev/null
+          docker run -d --name reacher -p 8080:8080 -e RCH__HTTP_HOST=0.0.0.0 \
+            -e RCH__HELLO_NAME=${{ vars.HELLO_NAME }} -e RCH__FROM_EMAIL=${{ vars.FROM_EMAIL }} \
+            -e RCH__SMTP_TIMEOUT=40 -e RCH__WORKER__ENABLE=false reacherhq/backend:latest >/dev/null
+          for i in $(seq 1 60); do curl -s -o /dev/null "localhost:8888/search?q=test&format=json" && break; sleep 2; done
+          for i in $(seq 1 60); do curl -s -o /dev/null localhost:8080 && break; sleep 2; done
+          for i in $(seq 1 60); do curl -s -o /dev/null localhost:9292 && break; sleep 2; done
+      - name: research batch (find, fit check, range read)
+        timeout-minutes: 60
+        working-directory: research
+        run: |
+          set +e; python -m research.worker --minutes "${{ inputs.minutes || '35' }}" --countries "$FOCUS" --focus "$FOCUS" > worker.log 2>&1; rc=$?
+          tail -1 worker.log
+          grep -oE "[A-Za-z_.]+(Error|Exception|Timeout)\b" worker.log | sort | uniq -c | sort -rn | head -5   # class names only
+          echo "### Research batch" >> $GITHUB_STEP_SUMMARY; tail -1 worker.log >> $GITHUB_STEP_SUMMARY; exit $rc
+      - name: email check (new primary contacts)
+        timeout-minutes: 35
+        if: always()
+        working-directory: research
+        run: |
+          set +e; python -m research.verify_inline --minutes "${{ inputs.verify_minutes || '25' }}" --focus "$FOCUS" --shard "${{ matrix.shard }}/$SHARDS" > verify.log 2>&1; rc=$?
+          tail -1 verify.log
+          grep -oE "[A-Za-z_.]+(Error|Exception|Timeout)\b" verify.log | sort | uniq -c | sort -rn | head -5   # class names only
+          echo "### Email check" >> $GITHUB_STEP_SUMMARY; tail -1 verify.log >> $GITHUB_STEP_SUMMARY; exit $rc
+      - name: update Google Sheet
+        timeout-minutes: 15
+        working-directory: research
+        if: always() && matrix.shard == 0
+        run: python -m research.sheet > sheet.log 2>&1 && echo "sheet updated" || (echo "sheet update failed"; exit 1)

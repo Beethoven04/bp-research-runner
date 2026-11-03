@@ -14,9 +14,10 @@ from .verify import _cache
 def pending(c, limit, countries=()):
     return [r["email"] for r in c.execute(
         "select k.email from contacts k join companies c on c.id=k.company_id "
-        "where k.is_primary and k.verdict='unchecked' and coalesce(k.mx_provider,'') not in ('','none') "
+        "where k.is_primary and (k.verdict='unchecked' or (k.verdict='unknown' and k.checks < 3 "
+        " and k.checked_at < now() - interval '3 hours')) and coalesce(k.mx_provider,'') not in ('','none') "
         "and c.status in ('fit','review') and c.tenant_id=%s and (cardinality(%s::text[])=0 or c.country=any(%s)) "
-        "order by c.priority desc, k.email limit %s",
+        "order by (k.verdict='unknown'), c.priority desc, k.email limit %s",
         (config.TENANT, list(countries), list(countries), limit)).fetchall()]
 
 
