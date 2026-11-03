@@ -68,3 +68,35 @@ class BeautySignal(unittest.TestCase):
         t = "Hudvård och smink - Kosmetik, hårvård, schampo och serum. Skönhet för alla."
         self.assertGreaterEqual(len(fit.BEAUTY.findall(t)), 5)
         self.assertEqual(fit.BEAUTY.findall("Bilverkstad och däck, service och reservdelar"), [])
+
+
+class PickCountryTest(__import__("unittest").TestCase):
+    def test_non_europe_tie_rejects(self):
+        from collections import Counter
+        self.assertEqual(fit.pick_country(Counter({"AL": 1, "US": 1}), "SI"), "")      # tie: unclear
+        self.assertEqual(fit.pick_country(Counter({"GB": 1, "US": 1}), "GB"), "GB")    # $ selector on a UK shop
+        self.assertEqual(fit.pick_country(Counter({"AL": 1, "US": 2}), "SI"), "US")    # "USA" in title adds 1
+
+    def test_european_tie_unclear(self):
+        from collections import Counter
+        self.assertEqual(fit.pick_country(Counter({"AL": 1, "PT": 1}), "SI"), "")
+        self.assertEqual(fit.pick_country(Counter({"SE": 1, "NO": 1}), "SE"), "SE")
+
+    def test_clear_winner(self):
+        from collections import Counter
+        self.assertEqual(fit.pick_country(Counter({"FR": 3, "BE": 1}), "NL"), "FR")
+        self.assertEqual(fit.pick_country(Counter(), "NL"), "")
+
+    def test_usa_words(self):
+        self.assertTrue(fit.NON_EU_WORDS.search("Arabic perfumes store near Chicago, USA"))
+        self.assertFalse(fit.NON_EU_WORDS.search("Parfums Dubai, livraison France"))
+
+
+
+class PhoneCountryTest(__import__("unittest").TestCase):
+    def test_noise_is_not_usa(self):
+        self.assertFalse(fit.country_hints("order +1 2345678 9"))
+
+    def test_real_numbers(self):
+        self.assertEqual(dict(fit.country_hints("tel 0031 20 555 1234")), {"NL": 1})
+        self.assertEqual(dict(fit.country_hints("+1 312 555 0123")), {"US": 1})

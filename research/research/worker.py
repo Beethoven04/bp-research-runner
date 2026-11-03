@@ -161,6 +161,8 @@ def score(c, cid):
         s += 10 + (15 if k["kind"] == "named" else 5)
     if comp["gap_brands"]:
         s += min(10, len(comp["gap_brands"]))
+    if seg == "distributor":
+        s -= 100        # distributors are contacted last (decided 2 Nov 2026)
     c.execute("update companies set priority=%s where id=%s", (s, cid))
 
 

@@ -1,7 +1,10 @@
 name: research
-# Started by n8n ("BP · Research runner") every hour. One run at a time; a new start waits for the running one.
+# Runs every hour on GitHub's own schedule (the n8n server is down, decided 3 Nov 2026), or by hand.
+# One run at a time; a new start waits for the running one.
 # Logs are public: every step prints counts only. Details stay in the database.
 on:
+  schedule:
+    - cron: "17 * * * *"
   workflow_dispatch:
     inputs:
       minutes: {description: "worker minutes", required: true, default: "45"}
@@ -36,19 +39,24 @@ jobs:
           for i in $(seq 1 60); do curl -s -o /dev/null "localhost:8888/search?q=test&format=json" && break; sleep 2; done
           for i in $(seq 1 60); do curl -s -o /dev/null localhost:8080 && break; sleep 2; done
       - name: research batch (find, fit check, range read)
+        timeout-minutes: 60
         working-directory: research
         run: |
-          set +e; python -m research.worker --minutes "${{ inputs.minutes }}" --countries "${{ inputs.countries }}" > worker.log 2>&1; rc=$?
+          set +e; python -m research.worker --minutes "${{ inputs.minutes || '45' }}" --countries "${{ inputs.countries || 'SE,NO,FI,DK,DE,NL,BE,FR,ES,IT,PL,PT,BA,AL,IE,AT,CZ,GR,HR,RS,SI,SK,HU,RO,BG,LT,LV,EE,LU,CH,GB,ME,MK,XK' }}" > worker.log 2>&1; rc=$?
           tail -1 worker.log
+          grep -oE "[A-Za-z_.]+(Error|Exception|Timeout)\b" worker.log | sort | uniq -c | sort -rn | head -5   # class names only
           echo "### Research batch" >> $GITHUB_STEP_SUMMARY; tail -1 worker.log >> $GITHUB_STEP_SUMMARY; exit $rc
       - name: email check (new primary contacts)
+        timeout-minutes: 35
         if: always()
         working-directory: research
         run: |
-          set +e; python -m research.verify_inline --minutes "${{ inputs.verify_minutes }}" > verify.log 2>&1; rc=$?
+          set +e; python -m research.verify_inline --minutes "${{ inputs.verify_minutes || '25' }}" > verify.log 2>&1; rc=$?
           tail -1 verify.log
+          grep -oE "[A-Za-z_.]+(Error|Exception|Timeout)\b" verify.log | sort | uniq -c | sort -rn | head -5   # class names only
           echo "### Email check" >> $GITHUB_STEP_SUMMARY; tail -1 verify.log >> $GITHUB_STEP_SUMMARY; exit $rc
       - name: update Google Sheet
+        timeout-minutes: 15
         working-directory: research
         if: always()
         run: python -m research.sheet > sheet.log 2>&1 && echo "sheet updated" || (echo "sheet update failed"; exit 1)

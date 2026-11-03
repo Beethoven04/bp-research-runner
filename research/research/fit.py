@@ -8,6 +8,7 @@ import re
 from collections import Counter
 from urllib.parse import urljoin, urlparse
 
+import phonenumbers
 import requests
 from bs4 import BeautifulSoup
 
@@ -34,6 +35,15 @@ CART = re.compile(r"(add to cart|lägg i varukorg|legg i handlekurv|lisää osto
 MARKETPLACES = {"amazon", "fyndiq", "plick", "cdon", "tradera", "bol", "allegro", "emag", "zalando", "ebay", "finn",
                 "blocket", "etsy", "vinted", "trendyol", "kaufland", "otto", "cdiscount", "fnac", "aliexpress", "temu",
                 "wish", "marktplaats", "leboncoin", "subito", "wallapop", "olx", "tori", "dba", "guloggratis"}
+# Distributors (official importer / brand agent): still leads, but contacted last (decided 2 Nov 2026, Louai).
+DISTRIBUTOR = re.compile(
+    r"\b(official (?:distributor|importer)|exclusive (?:distributor|importer)|authori[sz]ed distributor|"
+    r"(?:sole|general) (?:distributor|importer|agent)|distributeur (?:officiel|exclusif)|importateur|"
+    r"distribuidor (?:oficial|exclusivo)|importador|distributore (?:ufficiale|esclusivo)|importatore|"
+    r"(?:offizieller|exklusiver|autorisierter) (?:distributor|importeur|vertriebspartner)|generalimporteur|importeur|"
+    r"(?:officiële|exclusieve) (?:distributeur|importeur)|generalagent|enedistributør|eneforhandler|"
+    r"(?:officiell|exklusiv) (?:distributör|importör)|maahantuoja|oficjalny dystrybutor|wyłączny dystrybutor|"
+    r"brand distribution|fragrance distribution|perfume distributor|parfum distributeur)\b", re.I)
 CONTACT_PATHS = ["/contact", "/kontakt", "/contact-us", "/kontakta-oss", "/kontakt-oss", "/ota-yhteytta", "/yhteystiedot",
                  "/om-oss", "/about", "/about-us", "/impressum", "/imprint", "/contacto", "/contatti", "/contato",
                  "/pages/contact", "/pages/kontakt", "/pages/about-us", "/pages/om-oss", "/sidor/kontakt"]
@@ -77,14 +87,63 @@ CURRENCY = [(re.compile(r"\bSEK\b"), "SE"), (re.compile(r"\bNOK\b"), "NO"), (re.
             (re.compile(r"\bUSD\b|\$\s?\d"), "US")]
 
 
+def phone_country(code: str, raw: str) -> str:
+    """Region of a real phone number (Google libphonenumber), or "" when the digits are not a valid number.
+    Stops "+1 234567"-like noise (order ids, prices) from counting as the USA (3 Nov 2026)."""
+    digits = re.sub(r"\D", "", raw)
+    digits = digits[2:] if raw.lstrip().startswith("00") else digits
+    try:
+        num = phonenumbers.parse("+" + digits, None)
+    except phonenumbers.NumberParseException:
+        return ""
+    if not phonenumbers.is_valid_number(num):
+        # the regex can swallow trailing digits; try the shortest valid prefix length for this code
+        for cut in range(len(digits) - 1, len(code) + 5, -1):
+            try:
+                num = phonenumbers.parse("+" + digits[:cut], None)
+            except phonenumbers.NumberParseException:
+                continue
+            if phonenumbers.is_valid_number(num):
+                break
+        else:
+            return ""
+    return phonenumbers.region_code_for_number(num) or ""
+
+
 def country_hints(text: str):
     """Countries named by phone numbers and currencies on the pages (Counter)."""
     from collections import Counter
-    n = Counter(PHONES[m] for m in PHONE_RE.findall(text))
+    n = Counter()
+    for m in PHONE_RE.finditer(text):
+        cc = phone_country(m.group(1), m.group(0))
+        if cc:
+            n[cc] += 1
     cur = [cc for rx, cc in CURRENCY if rx.search(text)]
     if len(cur) <= 2:          # more = a currency selector, says nothing about the shop
         n.update(cur)
     return n
+
+
+# A shop that names a non-European home market in its title/description (Oud n Musk "Chicago, USA").
+NON_EU_WORDS = re.compile(r"\b(USA|U\.S\.|United States|Canada|Australia)(?![a-z])", re.I)
+NON_EU_WORDS_CC = {"usa": "US", "us": "US", "united states": "US", "canada": "CA", "australia": "AU"}
+
+
+def pick_country(hints, current: str) -> str:
+    """Country from phone/currency hints, or "" when unclear. A non-European hint stronger than the best
+    European one wins (the shop is then rejected as outside Europe). A tie between European countries is unclear,
+    unless the current country is one of them. Fixes 2 Nov 2026: {'AL': 1, 'US': 1} picked Albania."""
+    if not hints:
+        return ""
+    top = max(hints.values())
+    best = [cc for cc, n in hints.items() if n == top]
+    eu_top = max((n for cc, n in hints.items() if cc in EUROPE), default=0)
+    non_eu = [cc for cc, n in hints.items() if cc not in EUROPE and n > eu_top]   # a tie is too weak ($ price, +1 number)
+    if non_eu:
+        return max(non_eu, key=lambda cc: hints[cc])
+    if current in best:
+        return current
+    return best[0] if len(best) == 1 else ""
 
 
 AMBIGUOUS_IN_DOMAIN = {"Emper", "Nusuk"}   # common word stems (emperor..., nusuk travel)
@@ -229,6 +288,10 @@ def check(company: dict, our_brands: list, arabic: list):
         elif is_shop:
             out["segment"] = "online_store"
     perf_home = n_perf >= 5 or (thin and len(hits) >= 5)
+    out["sells_perfume"] = bool(perf_home or out["brand_hits"])
+    if DISTRIBUTOR.search(head + " " + home[:4000]) and not company.get("is_chain"):
+        out["segment"] = "distributor"
+        out["evidence"].append(("distributor_words", DISTRIBUTOR.search(head + " " + home[:4000]).group(0), final, ""))
     beauty_hits = BEAUTY.findall(site_text + " " + extra) if thin else []
     beauty_home = n_perf + n_beauty >= 5 or (thin and len(hits) + len(beauty_hits) >= 5)
     seg0 = company.get("segment") or ""
@@ -273,11 +336,11 @@ def check(company: dict, our_brands: list, arabic: list):
     if not cc and not lang_decides:
         # generic TLD in English (or no language): phone prefix / currency must confirm the country
         hints = country_hints(" ".join(BeautifulSoup(h, "lxml").get_text(" ", strip=True) for h in pages.values()))
-        if out["country"] in hints:
-            out["evidence"].append(("country_from_phone", out["country"], final, f"hints={dict(hints)}"))
-        elif hints:
-            out["country"] = hints.most_common(1)[0][0]
-            out["evidence"].append(("country_from_phone", out["country"], final, f"hints={dict(hints)}"))
+        hints.update(NON_EU_WORDS_CC[m.group(1).lower().replace(".", "")] for m in NON_EU_WORDS.finditer(head))
+        pick = pick_country(hints, out["country"])
+        if pick:
+            out["country"] = pick
+            out["evidence"].append(("country_from_phone", pick, final, f"hints={dict(hints)}"))
         else:
             country_unclear = True
     if out["country"] not in EUROPE:
@@ -328,8 +391,8 @@ def save(c, company: dict, res: dict, our_names=(), rules=None):
     sells_arabic = True if res.get("brand_hits") else None
     name = res.get("name") if company.get("first_source") == "search" else None
     c.execute("update companies set email_rule=%s where id=%s", (rule, cid))
-    c.execute("update companies set status=%s, segment=coalesce(segment,%s), country=%s, name=coalesce(%s,name), "
+    c.execute("update companies set status=%s, segment=case when %s='distributor' then 'distributor' else coalesce(segment,%s) end, country=%s, name=coalesce(%s,name), "
               "sells_perfume=%s, sells_arabic=coalesce(%s,sells_arabic), range_status=case when %s then 'unknown' else range_status end, "
               "updated_at=now() where id=%s",
-              (res["status"], res.get("segment"), res["country"], name, res["status"] == "fit", sells_arabic,
+              (res["status"], res.get("segment"), res.get("segment"), res["country"], name, res.get("sells_perfume"), sells_arabic,
                bool(res.get("range_unknown")), cid))
