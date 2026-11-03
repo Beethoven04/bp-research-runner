@@ -5,11 +5,15 @@ Collects published emails from contact / about / imprint pages.
 Result: status 'fit' or 'not_fit' (+ reason), never a guess without a page behind it.
 """
 import re
+import time
 from collections import Counter
 from urllib.parse import urljoin, urlparse
 
 import phonenumbers
 import requests
+import urllib3
+
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)   # verify=False fallback
 from bs4 import BeautifulSoup
 
 from . import brands as B
@@ -178,14 +182,73 @@ def tld_country(domain: str) -> str:
     return tld.upper() if len(tld) == 2 else ""
 
 
-def fetch(session, url, timeout=20):
+BROWSER_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) "
+                  "Chrome/130.0.0.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+    "Accept-Language": "en-GB,en;q=0.9",
+}
+
+
+MAX_PAGE = 3_000_000
+
+
+def _read_capped(r, seconds):
+    """Body with a TOTAL time limit and a size cap: `timeout` only limits each socket read, so a server that drips
+    bytes can hold a thread for ever (seen 3 Nov 2026: one SSL read stuck > 40 min)."""
+    end, buf, size = time.time() + seconds, [], 0
     try:
-        r = session.get(url, timeout=timeout, allow_redirects=True)
-        ct = r.headers.get("content-type", "")
-        if r.status_code == 200 and ("html" in ct or not ct):
-            return r.url, r.text
+        for chunk in r.iter_content(65536):
+            buf.append(chunk)
+            size += len(chunk)
+            if size > MAX_PAGE or time.time() > end:
+                break
     except requests.RequestException:
         pass
+    finally:
+        r.close()
+    if not hasattr(r, "encoding") or not r.encoding:
+        enc = "utf-8"
+    else:
+        enc = r.encoding
+    return b"".join(buf).decode(enc if enc.lower() != "iso-8859-1" else "utf-8", errors="replace")
+
+
+def fetch(session, url, timeout=20, retry=False):
+    """GET a public page -> (final_url, html) or (None, ""). Fixes 3 Nov 2026 (false site_down, ~28-60% of DE):
+    SSLError -> same URL without certificate check (we only read public pages); 403/503 -> once more with full
+    browser headers; ConnectionError/Timeout -> one retry after 3 s when `retry` (DNS failures are not retried)."""
+    verify, headers = True, None
+    for attempt in range(3):
+        try:
+            r = session.get(url, timeout=timeout, allow_redirects=True, verify=verify, headers=headers, stream=True)
+            ct = r.headers.get("content-type", "")
+            if r.status_code == 200 and ("html" in ct or not ct):
+                return r.url, _read_capped(r, timeout * 2)
+            r.close()
+            if r.status_code in (403, 503) and headers is None:
+                headers = BROWSER_HEADERS
+                continue
+            return None, ""
+        except requests.exceptions.SSLError:
+            if not verify:
+                return None, ""
+            verify = False
+        except (requests.ConnectionError, requests.Timeout) as e:
+            if not retry or attempt or "NameResolution" in str(e) or "Name or service not known" in str(e):
+                return None, ""
+            time.sleep(3)
+        except requests.RequestException:
+            return None, ""
+    return None, ""
+
+
+def fetch_home(session, dom):
+    """Home page: https://dom, https://www.dom, http://www.dom, http://dom (first that answers)."""
+    for i, u in enumerate((f"https://{dom}/", f"https://www.{dom}/", f"http://www.{dom}/", f"http://{dom}/")):
+        final, html = fetch(session, u, timeout=20 if i == 0 else 12, retry=(i == 0))
+        if html:
+            return final, html
     return None, ""
 
 
@@ -230,9 +293,7 @@ def check(company: dict, our_brands: list, arabic: list):
     dom = company["domain"]
     s = requests.Session()
     s.headers["User-Agent"] = UA
-    final, html = fetch(s, f"https://{dom}/")
-    if not html:
-        final, html = fetch(s, f"http://www.{dom}/")
+    final, html = fetch_home(s, dom)
     out = {"evidence": [], "contacts": {}, "name": None, "country": company["country"], "segment": company["segment"]}
     if not html:
         out.update(status="not_fit", reason="site_down")

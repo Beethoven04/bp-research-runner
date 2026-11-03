@@ -17,7 +17,7 @@ from .crawl import UA
 def check(row):
     s = requests.Session()
     s.headers["User-Agent"] = UA
-    final, html = fit.fetch(s, f"https://{row['domain']}/", timeout=15)
+    final, html = fit.fetch_home(s, row["domain"])
     if not html:
         return row, None, None
     soup = BeautifulSoup(html, "lxml")

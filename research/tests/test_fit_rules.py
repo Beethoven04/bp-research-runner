@@ -114,3 +114,77 @@ class FreeMailTest(__import__("unittest").TestCase):
         self.assertTrue(free_mail_ok("jane.brandejska@gmail.com"))  # real person-named shop address
         self.assertFalse(free_mail_ok("testparfym@gmail.com"))
 
+
+
+class FetchTest(__import__("unittest").TestCase):
+    """fit.fetch / fetch_home fallbacks (3 Nov 2026: false site_down rejects)."""
+
+    class R:
+        def __init__(self, code, url="https://x.de/"):
+            self.status_code, self.url, self.headers, self.encoding = code, url, {"content-type": "text/html"}, "utf-8"
+
+        def iter_content(self, n):
+            yield b"<html>ok</html>"
+
+        def close(self):
+            pass
+
+    class S:
+        def __init__(self, plan):
+            self.plan, self.calls = list(plan), []
+
+        def get(self, url, **kw):
+            self.calls.append((url, kw.get("verify"), bool(kw.get("headers"))))
+            step = self.plan.pop(0)
+            if isinstance(step, Exception):
+                raise step
+            return FetchTest.R(step, url)
+
+    def test_ssl_error_retries_without_verify(self):
+        import requests
+        s = self.S([requests.exceptions.SSLError("bad cert"), 200])
+        self.assertTrue(fit.fetch(s, "https://x.de/")[1])
+        self.assertEqual(s.calls[1][1], False)
+
+    def test_403_retries_with_browser_headers(self):
+        s = self.S([403, 200])
+        self.assertTrue(fit.fetch(s, "https://x.de/")[1])
+        self.assertTrue(s.calls[1][2])
+
+    def test_connection_error_retry_only_when_asked(self):
+        import requests
+        fit.time.sleep, real = (lambda _: None), fit.time.sleep
+        try:
+            s = self.S([requests.ConnectionError("reset"), 200])
+            self.assertTrue(fit.fetch(s, "https://x.de/", retry=True)[1])
+            s = self.S([requests.ConnectionError("reset")])
+            self.assertFalse(fit.fetch(s, "https://x.de/")[1])
+        finally:
+            fit.time.sleep = real
+
+    def test_home_tries_www_and_http(self):
+        import requests
+        s = self.S([404, requests.ConnectionError("Name or service not known"), 404, 200])
+        final, html = fit.fetch_home(s, "x.de")
+        self.assertTrue(html)
+        self.assertEqual([c[0] for c in s.calls], ["https://x.de/", "https://www.x.de/", "http://www.x.de/", "http://x.de/"])
+
+
+class ReadCapTest(__import__("unittest").TestCase):
+    def test_drip_server_stops_at_deadline(self):
+        import time
+
+        class Drip:
+            encoding = "utf-8"
+
+            def iter_content(self, n):
+                while True:
+                    time.sleep(0.05)
+                    yield b"x"
+
+            def close(self):
+                pass
+        t = time.time()
+        body = fit._read_capped(Drip(), 0.3)
+        self.assertLess(time.time() - t, 1.0)
+        self.assertTrue(body.startswith("x"))
