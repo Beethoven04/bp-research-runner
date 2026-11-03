@@ -15,7 +15,7 @@ concurrency: {group: research, cancel-in-progress: false}
 jobs:
   batch:
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 170
     env:
       DATABASE_URL: ${{ secrets.DATABASE_URL }}
       REOON_KEY: ${{ secrets.REOON_KEY }}
