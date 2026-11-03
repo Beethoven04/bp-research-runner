@@ -53,7 +53,7 @@ jobs:
         timeout-minutes: 60
         working-directory: research
         run: |
-          set +e; python -m research.worker --minutes "${{ inputs.minutes || '35' }}" --countries "$FOCUS" --focus "$FOCUS" > worker.log 2>&1; rc=$?
+          set +e; python -m research.worker --minutes "${{ inputs.minutes || '35' }}" --countries "$FOCUS" --focus "$FOCUS" ${{ matrix.shard != 0 && '--no-discover' || '' }} > worker.log 2>&1; rc=$?
           tail -1 worker.log
           grep -oE "[A-Za-z_.]+(Error|Exception|Timeout)\b" worker.log | sort | uniq -c | sort -rn | head -5   # class names only
           echo "### Research batch" >> $GITHUB_STEP_SUMMARY; tail -1 worker.log >> $GITHUB_STEP_SUMMARY; exit $rc

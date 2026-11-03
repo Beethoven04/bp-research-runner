@@ -216,7 +216,7 @@ def _tick(kinds, slots, end, ctx, stats, lock, ex, running):
             stats[j["kind"]] = stats.get(j["kind"], 0) + 1
 
 
-def run(minutes: float, countries, threads: int = 12):
+def run(minutes: float, countries, threads: int = 12, discover: bool = True):
     import threading
     end = time.time() + minutes * 60
     ctx = Ctx()
@@ -225,10 +225,11 @@ def run(minutes: float, countries, threads: int = 12):
         # recover after a crash; only old jobs, because parallel runners (shards) share the queue
         c.execute("update jobs set status='queued' where status='running' and updated_at < now() - interval '2 hours'")
         plan(c, countries)
-    lanes = [threading.Thread(target=_lane, args=(["discover_osm"], 1, end, ctx, stats, lock)),
-             threading.Thread(target=_lane, args=(["discover_search"], 1, end, ctx, stats, lock)),
-             threading.Thread(target=_lane, args=(["fit"], threads, end, ctx, stats, lock)),
+    lanes = [threading.Thread(target=_lane, args=(["fit"], threads, end, ctx, stats, lock)),
              threading.Thread(target=_lane, args=(["range"], 16, end, ctx, stats, lock))]
+    if discover:   # one runner per agent discovers: parallel searches writing the same new shops deadlocked
+        lanes += [threading.Thread(target=_lane, args=(["discover_osm"], 1, end, ctx, stats, lock)),
+                  threading.Thread(target=_lane, args=(["discover_search"], 1, end, ctx, stats, lock))]
     for t in lanes:
         t.start()
     for t in lanes:
@@ -246,6 +247,8 @@ if __name__ == "__main__":
     ap.add_argument("--countries", default=",".join(PLAN_COUNTRIES[:13]))
     ap.add_argument("--threads", type=int, default=12)
     ap.add_argument("--focus", default="", help="only take jobs of these countries, e.g. DE")
+    ap.add_argument("--no-discover", action="store_true", help="no OSM/search lanes (extra parallel runners)")
     a = ap.parse_args()
     FOCUS[:] = [x.strip().upper() for x in a.focus.split(",") if x.strip()]
-    print(json.dumps(run(a.minutes, [x.strip().upper() for x in a.countries.split(",") if x.strip()], a.threads)))
+    print(json.dumps(run(a.minutes, [x.strip().upper() for x in a.countries.split(",") if x.strip()], a.threads,
+                         not a.no_discover)))
