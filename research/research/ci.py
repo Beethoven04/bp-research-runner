@@ -15,7 +15,7 @@ import tempfile
 import time
 
 from . import config
-from .verify import _cache, _save
+from .verify import _cache, _save, reacher_verdict
 
 WORKFLOW = config.REPO / "ci" / "verify.yml"
 MAP = {"safe": "valid", "invalid": "invalid", "risky": "risky"}
@@ -36,7 +36,7 @@ def import_results(folder):
             r = json.loads(line)
             e = r["input"].lower()
             smtp = r.get("smtp") or {}
-            verdict = MAP.get(r.get("is_reachable"), "unknown")
+            verdict = reacher_verdict(r.get("is_reachable"), smtp)
             if r.get("error"):
                 verdict = "unknown"
             _cache[e] = {"email": e, "checked_at": time.strftime("%Y-%m-%d %H:%M"), "verdict": verdict,

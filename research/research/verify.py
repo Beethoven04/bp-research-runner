@@ -91,6 +91,19 @@ def truemail(email: str):
         return {"verdict": "unknown", "detail": f"truemail error: {str(e)[:100]}"}
 
 
+def reacher_verdict(reach, smtp):
+    """Reacher says "risky" for every role address (info@...) even when the server confirmed the mailbox.
+    Mailbox confirmed on a domain that is not catch-all = valid (the role flag is kept on the contact).
+    Server refused it (full inbox / disabled) = invalid: it would bounce (3 Nov 2026)."""
+    verdict = {"safe": "valid", "invalid": "invalid", "risky": "risky"}.get(reach, "unknown")
+    if reach == "risky" and smtp.get("is_catch_all") is False:
+        if smtp.get("is_deliverable") is True and not smtp.get("has_full_inbox") and not smtp.get("is_disabled"):
+            verdict = "valid"
+        elif smtp.get("is_deliverable") is False:
+            verdict = "invalid"
+    return verdict
+
+
 def reoon(email: str):
     if not config.REOON_KEY:
         return None
@@ -126,7 +139,7 @@ def verify(email: str, use_reoon_on_unknown: bool = True, force: bool = False) -
             smtp = r.get("smtp") or {}
             catch_all = smtp.get("is_catch_all")
             detail = f"reacher: {reach}, catch_all={catch_all}, deliverable={smtp.get('is_deliverable')}"
-            verdict = {"safe": "valid", "invalid": "invalid", "risky": "risky"}.get(reach, "unknown")
+            verdict = reacher_verdict(reach, smtp)
             res["catch_all"] = catch_all
     if verdict == "unknown":
         t = truemail(email)
