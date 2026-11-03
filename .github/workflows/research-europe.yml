@@ -39,7 +39,7 @@ jobs:
         run: pip install -q -r research/requirements.txt
       - name: start search engine (SearXNG) and email checkers (Reacher, Truemail)
         run: |
-          export TRUEMAIL_TOKEN=$(openssl rand -hex 16); echo "TRUEMAIL_TOKEN=$TRUEMAIL_TOKEN" >> $GITHUB_ENV
+          export TRUEMAIL_TOKEN=$(openssl rand -hex 16); echo "::add-mask::$TRUEMAIL_TOKEN"; echo "TRUEMAIL_TOKEN=$TRUEMAIL_TOKEN" >> $GITHUB_ENV
           docker run -d --name truemail -p 9292:9292 -e VERIFIER_EMAIL=${{ vars.FROM_EMAIL }} \
             -e VERIFIER_DOMAIN=${{ vars.HELLO_NAME }} -e ACCESS_TOKENS=$TRUEMAIL_TOKEN truemail/truemail-rack:v0.10.0 >/dev/null
           sed -i "s/__SECRET__/$(openssl rand -hex 24)/" infra/searxng/settings.yml
