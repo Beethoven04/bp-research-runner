@@ -1,4 +1,5 @@
 """Email helpers: extraction from HTML, role-address detection, name normalisation, format patterns."""
+import base64
 import html as htmlmod
 import re
 import urllib.parse
@@ -7,9 +8,9 @@ import unicodedata
 EMAIL_RE = re.compile(r"[a-z0-9][a-z0-9._%+-]{0,63}@[a-z0-9-]+(?:\.[a-z0-9-]+)*\.[a-z]{2,24}", re.I)
 # "name [at] domain [dot] com", "name(at)domain.com", "name at domain dot com"
 OBFUSCATED_RE = re.compile(
-    r"([a-z0-9][a-z0-9._%+-]{0,63})\s*(?:\[at\]|\(at\)|\{at\}|\[@\]|\s\(a\)\s)\s*"
-    r"([a-z0-9-]+(?:\s*(?:\[dot\]|\(dot\)|\s+dot\s+|\.)\s*[a-z0-9-]+)+)", re.I)
-DOT_RE = re.compile(r"\s*(?:\[dot\]|\(dot\)|\s+dot\s+|\.)\s*", re.I)
+    r"([a-z0-9][a-z0-9._%+-]{0,63})\s*(?:\[at\]|\(at\)|\{at\}|\[@\]|\s\(a\)\s|\(ät\)|\[ät\]|\(@\))\s*"
+    r"([a-z0-9-]+(?:\s*(?:\[dot\]|\(dot\)|\s+dot\s+|\[punkt\]|\(punkt\)|\s+punkt\s+|\.)\s*[a-z0-9-]+)+)", re.I)
+DOT_RE = re.compile(r"\s*(?:\[dot\]|\(dot\)|\s+dot\s+|\[punkt\]|\(punkt\)|\s+punkt\s+|\.)\s*", re.I)
 
 ROLE_LOCALS = {
     "info", "hello", "hi", "hej", "kontakt", "contact", "support", "help", "sales", "salg", "careers", "career",
@@ -85,10 +86,58 @@ def clean_text(html: str) -> str:
     return htmlmod.unescape(text)
 
 
+JOOMLA_RE = re.compile(r"<joomla-hidden-mail[^>]*?\sfirst=\"([A-Za-z0-9+/=]+)\"[^>]*?\slast=\"([A-Za-z0-9+/=]+)\"", re.I)
+TYPO3_RE = re.compile(r"(?:linkTo_UnCryptMailto\(\s*['\"](?:javascript:)?|data-mailto-token=\")([^'\")]{6,200})", re.I)
+RTL_RE = re.compile(r"<(?:span|bdo|div|p|a)[^>]*(?:direction\s*:\s*rtl|bidi-override|dir=\"rtl\")[^>]*>([^<]{5,120})<", re.I)
+JS_CONCAT = re.compile(r"['\"]\s*\+\s*['\"]")
+
+
+def _typo3_decrypt(enc: str, offset: int) -> str:
+    """TYPO3 spamProtectEmailAddresses: shifts chars inside 3 ranges ('+'..':', '@'..'Z', 'a'..'z') with wrap."""
+    out = []
+    for ch in enc:
+        n = ord(ch)
+        for lo, hi in ((0x2B, 0x3A), (0x40, 0x5A), (0x61, 0x7A)):
+            if lo <= n <= hi:
+                n += offset
+                if n > hi:
+                    n = lo + (n - hi - 1)
+                elif n < lo:
+                    n = hi - (lo - n - 1)
+                break
+        out.append(chr(n))
+    return "".join(out)
+
+
+def decode_protected(html: str) -> set:
+    """German/EU site builders hide the Impressum address from bots (4 Nov 2026, 20-shop DE sample):
+    Joomla <joomla-hidden-mail first/last base64>, TYPO3 linkTo_UnCryptMailto / data-mailto-token (shifted chars),
+    reversed text shown with CSS direction:rtl, and JS string pieces ('info' + '@' + 'shop.de')."""
+    found = set()
+    for first, last in JOOMLA_RE.findall(html):
+        try:
+            found.add(base64.b64decode(first).decode() + "@" + base64.b64decode(last).decode())
+        except (ValueError, UnicodeDecodeError):
+            pass
+    for enc in TYPO3_RE.findall(html):
+        enc = htmlmod.unescape(enc)
+        for off in range(-10, 11):
+            dec = _typo3_decrypt(enc, off)
+            if dec.lower().startswith("mailto:"):
+                found.add(urllib.parse.unquote(dec[7:]).split("?")[0])
+                break
+    for txt in RTL_RE.findall(html):
+        found.update(EMAIL_RE.findall(htmlmod.unescape(txt)[::-1]))
+    if JS_CONCAT.search(html):
+        found.update(EMAIL_RE.findall(JS_CONCAT.sub("", clean_text(html))))
+    return found
+
+
 def extract_emails(html: str) -> set:
     found = set()
     for m in re.finditer(r'data-cfemail="([0-9a-f]+)"', html, re.I):
         found.add(decode_cfemail(m.group(1)))
+    found |= decode_protected(html)
     text = clean_text(html)
     found.update(EMAIL_RE.findall(text))
     for local, dom in OBFUSCATED_RE.findall(re.sub(r"<[^>]+>", " ", text)):

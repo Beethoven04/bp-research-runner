@@ -45,6 +45,15 @@ def _overpass(query):
     raise RuntimeError(f"overpass failed: {last}")
 
 
+def site_from_email(mail):
+    """Business email -> its domain as the shop's website. Free-mail (gmail, web.de...) and non-lead domains -> None."""
+    from .emails import FREE_MAIL
+    if not mail or "@" not in mail:
+        return None
+    d = domain_of("https://" + mail.split(";")[0].strip().lower().split("@", 1)[1])
+    return None if (not d or d in FREE_MAIL or is_not_lead(d)) else d
+
+
 def osm(country: str):
     """Import all OSM places of the target kinds in one country. Returns counts."""
     parts = "".join(f'nwr["{k}"="{v}"](area.a);' for k, v in OSM_KINDS)
@@ -95,6 +104,8 @@ def osm(country: str):
             url = f"https://www.openstreetmap.org/{e['type']}/{e['id']}"
             city = t.get("addr:city") or t.get("addr:place")
             mail = t.get("email") or t.get("contact:email")
+            if not domain:
+                domain = site_from_email(mail)     # info@shop.de without a website tag: check shop.de (4 Nov 2026)
             if not domain and not (mail and "@" in mail):
                 n["no_site_no_email"] += 1      # nothing to check or contact: not stored
                 continue

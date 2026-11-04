@@ -4,6 +4,7 @@ Decides: alive? sells perfume? real country? segment (when unknown)? platform (f
 Collects published emails from contact / about / imprint pages.
 Result: status 'fit' or 'not_fit' (+ reason), never a guess without a page behind it.
 """
+import codecs
 import re
 import time
 from collections import Counter
@@ -207,11 +208,26 @@ def _read_capped(r, seconds):
         pass
     finally:
         r.close()
-    if not hasattr(r, "encoding") or not r.encoding:
-        enc = "utf-8"
-    else:
-        enc = r.encoding
-    return b"".join(buf).decode(enc if enc.lower() != "iso-8859-1" else "utf-8", errors="replace")
+    return _decode(b"".join(buf), getattr(r, "encoding", None))
+
+
+def _decode(body: bytes, declared) -> str:
+    """Bytes -> text. The server's charset is used only if Python knows it ("none", "utf8mb4"... are not codecs:
+    LookupError seen 4 Nov 2026). iso-8859-1 is requests' default guess, so utf-8 is tried first then."""
+    cands = []
+    if declared and declared.lower() != "iso-8859-1":
+        try:
+            codecs.lookup(declared)
+            cands.append(declared)
+        except LookupError:
+            pass
+    cands += ["utf-8", "cp1252"]
+    for enc in cands:
+        try:
+            return body.decode(enc)
+        except (UnicodeDecodeError, LookupError):
+            continue
+    return body.decode("utf-8", errors="replace")
 
 
 def fetch(session, url, timeout=20, retry=False):
@@ -238,18 +254,56 @@ def fetch(session, url, timeout=20, retry=False):
             if not retry or attempt or "NameResolution" in str(e) or "Name or service not known" in str(e):
                 return None, ""
             time.sleep(3)
-        except requests.RequestException:
+        except (requests.RequestException, UnicodeError, LookupError, ValueError):
+            # UnicodeDecodeError inside requests' redirect handling (non-UTF-8 Location header), bad URLs
             return None, ""
     return None, ""
 
 
 def fetch_home(session, dom):
-    """Home page: https://dom, https://www.dom, http://www.dom, http://dom (first that answers)."""
+    """Home page: https://dom, https://www.dom, http://www.dom, http://dom (first that answers). A page that only
+    redirects in the browser (meta refresh / window.location) is followed once (4 Nov 2026)."""
     for i, u in enumerate((f"https://{dom}/", f"https://www.{dom}/", f"http://www.{dom}/", f"http://{dom}/")):
         final, html = fetch(session, u, timeout=20 if i == 0 else 12, retry=(i == 0))
         if html:
+            nxt = soft_redirect(final, html)
+            if nxt:
+                f2, h2 = fetch(session, nxt, timeout=15)
+                if h2:
+                    return f2, h2
             return final, html
     return None, ""
+
+
+META_REFRESH = re.compile(r"<meta[^>]+http-equiv=[\"']?refresh[\"']?[^>]+content=[\"']?\s*\d+\s*;\s*url=([^\"'>\s]+)", re.I)
+JS_LOCATION = re.compile(r"(?:window\.)?(?:document\.)?location(?:\.href)?\s*=\s*[\"']([^\"']+)[\"']", re.I)
+
+
+def soft_redirect(final: str, html: str):
+    """URL of a browser-side redirect on a thin page (little visible text), else None."""
+    if len(re.sub(r"<script.*?</script>|<style.*?</style>|<[^>]+>", " ", html, flags=re.S | re.I).split()) > 120:
+        return None
+    m = META_REFRESH.search(html) or JS_LOCATION.search(html)
+    if not m:
+        return None
+    nxt = urljoin(final, m.group(1).strip())
+    return nxt if nxt.startswith("http") and nxt.rstrip("/") != final.rstrip("/") else None
+
+
+PARKED = re.compile(
+    r"domain default page|plesk is a hosting panel|this domain (?:is|has been) (?:parked|registered)|"
+    r"domain (?:is|may be) for sale|diese domain (?:kann|steht|ist) .{0,30}(?:kaufen|verkauf|reserviert|geparkt)|"
+    r"domain kaufen|hier entsteht (?:eine neue|in kürze)|website coming soon|under construction|"
+    r"sedo ?parking|parkingcrew|dan\.com|hugedomains|default web site page|apache2 (?:ubuntu|debian) default page|"
+    r"welcome to nginx|it works!|index of /|ce nom de domaine est|dominio en venta|questo dominio", re.I)
+
+
+def is_parked(html: str) -> bool:
+    """Parked domain, hosting default page or empty placeholder: not a shop (4 Nov 2026)."""
+    soup_text = re.sub(r"<script.*?</script>|<style.*?</style>|<[^>]+>", " ", html, flags=re.S | re.I)
+    words = soup_text.split()
+    head = " ".join(words[:400])
+    return bool(PARKED.search(head)) and len(words) < 800
 
 
 def platform(html: str) -> str:
@@ -297,6 +351,10 @@ def check(company: dict, our_brands: list, arabic: list):
     out = {"evidence": [], "contacts": {}, "name": None, "country": company["country"], "segment": company["segment"]}
     if not html:
         out.update(status="not_fit", reason="site_down")
+        return out
+    if is_parked(html):
+        out.update(status="not_fit", reason="parked_or_default_page")
+        out["evidence"].append(("parked_page", "yes", final, ""))
         return out
     real = domain_of(final) or dom
     if real != dom:
@@ -396,14 +454,11 @@ def check(company: dict, our_brands: list, arabic: list):
         # second pass: legal pages (terms, privacy, imprint, Shopify /policies/...), added 3 Nov 2026
         from . import contacts_more
         mine, other, _ = contacts_more.find(dom, real, html, final, s)
-        for e, u in mine.items():
-            if not BAD_LOCALS.search(e.split("@")[0]):
-                out["contacts"].setdefault(e, u)
-        if not out["contacts"]:
-            # free-mail address the shop publishes as its contact (gmail...), only when no own-domain one exists
-            for e, u in other.items():
-                if free_mail_ok(e) and not BAD_LOCALS.search(e.split("@")[0]):
-                    out["contacts"].setdefault(e, u)
+        # own domain > same business on another domain > free-mail published by the shop (contacts_more.pick)
+        keep, how = contacts_more.pick(mine, other, real)
+        out["contacts"].update(keep)
+        if how in ("same_business", "free_mail"):
+            out["evidence"].append(("contact_source", how, final, ", ".join(keep)[:300]))
         for e, u in list(other.items())[:5]:
             if e not in out["contacts"]:
                 out["evidence"].append(("other_domain_email", e, u, "not on the shop's own domain; not used"))

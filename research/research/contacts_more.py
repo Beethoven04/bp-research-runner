@@ -9,6 +9,7 @@ Run (backfill): python -m research.contacts_more [--limit N] [--dry]
 """
 import argparse
 import re
+from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import urljoin, urlparse
 
@@ -61,6 +62,45 @@ def own(email, real, dom):
     return ed.endswith(real) or ed.endswith(dom) or ed.split(".")[0] == base
 
 
+GENERIC = {
+    "beauty", "kosmetik", "cosmetic", "cosmetics", "cosmetique", "parfum", "parfums", "perfume", "perfumes",
+    "parfumerie", "perfumery", "profumeria", "perfumeria", "salon", "studio", "shop", "store", "online", "apotheke",
+    "pharmacy", "pharmacie", "farmacia", "apteka", "nails", "nail", "hair", "haar", "friseur", "coiffure", "spa",
+    "solutions", "group", "gmbh", "haus", "house", "center", "centre", "centrum", "welt", "world", "care", "medical",
+    "health", "natur", "nature", "style", "mode", "fashion", "home", "life", "design", "service", "services", "europe",
+    "germany", "deutschland", "france", "italia", "espana", "polska", "official", "boutique", "mail", "info", "team",
+    "kosmetikstudio", "beautysalon", "derma", "skin", "body", "wellness", "drogerie", "markt", "versand", "handel",
+}
+
+
+def _tokens(label: str) -> set:
+    return {t for t in re.split(r"[^a-z0-9]+|\d+", label.lower()) if len(t) >= 4 and t not in GENERIC}
+
+
+def same_business(email: str, real: str) -> bool:
+    """Address on another domain of the same business (yves-meerbusch.de -> info@yves-kosmetik.de,
+    staggenborg-apotheke.de -> info@staggenborg.com): the two domain names share a distinctive word (>= 4 letters,
+    not a generic trade word). Agencies/hosts (finance-solutions.net for beauty-solutions.net) do not match."""
+    ed = email.split("@")[1].lower()
+    return bool(_tokens(ed.split(".")[0]) & _tokens(real.split(".")[0]))
+
+
+def pick(mine: dict, other: dict, real: str) -> tuple:
+    """Contacts to keep, in order of trust (4 Nov 2026): own domain > same business on another domain > free-mail
+    published by the shop. -> (contacts {email: url}, how) with how in own | same_business | free_mail | none."""
+    from .emails import free_mail_ok
+    from .fit import BAD_LOCALS
+    ok = lambda e: not BAD_LOCALS.search(e.split("@")[0])
+    c = {e: u for e, u in mine.items() if ok(e)}
+    if c:
+        return c, "own"
+    c = {e: u for e, u in other.items() if ok(e) and same_business(e, real)}
+    if c:
+        return c, "same_business"
+    c = {e: u for e, u in other.items() if ok(e) and free_mail_ok(e)}
+    return (c, "free_mail") if c else ({}, "none")
+
+
 def find(dom, real=None, home_html=None, home_url=None, session=None):
     """-> ({email: source_url} on the shop's own domain, {email: url} elsewhere, pages read)."""
     real = real or dom
@@ -97,7 +137,6 @@ def find(dom, real=None, home_html=None, home_url=None, session=None):
 
 def main(limit, dry):
     from . import db, worker
-    from .fit import BAD_LOCALS
     with db.conn() as c:
         rows = c.execute("select id, domain from companies co where status in ('fit','review') and domain is not null "
                          "and not exists (select 1 from contacts k where k.company_id=co.id) order by priority desc limit %s",
@@ -111,11 +150,14 @@ def main(limit, dry):
             return r, ({}, {}, 0)
 
     got = n_other = 0
+    stats = Counter()
     with ThreadPoolExecutor(16) as ex:
         results = list(ex.map(one, rows))
     with db.conn() as c:
         for r, (mine, other, n) in results:
-            mine = {e: u for e, u in mine.items() if not BAD_LOCALS.search(e.split("@")[0])}
+            mine, how = pick(mine, other, r["domain"])
+            if how != "none":
+                stats[how] += 1
             if other:
                 n_other += 1
                 if not dry:
@@ -128,13 +170,15 @@ def main(limit, dry):
             if dry:
                 continue
             for e, u in mine.items():
+                kind = "role" if is_role(e) or how == "free_mail" else "named"
                 c.execute("insert into contacts(company_id,email,kind,source_url) values (%s,%s,%s,%s) on conflict do nothing",
-                          (r["id"], e, "role" if is_role(e) else "named", u))
+                          (r["id"], e, kind, u))
             worker.choose_primary(c, r["id"])
             worker.score(c, r["id"])
         if not dry:
             c.commit()
-    print(f"done: {got} of {len(rows)} now have an own-domain email; {n_other} show only/also other-domain "
+    print(f"by source: {dict(stats)}", flush=True)
+    print(f"done: {got} of {len(rows)} now have an email; {n_other} show only/also other-domain "
           f"addresses (gmail, parent company...){' (dry run, nothing saved)' if dry else ''}", flush=True)
 
 

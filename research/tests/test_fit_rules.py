@@ -199,3 +199,69 @@ class EncodingPrefixTest(__import__("unittest").TestCase):
         self.assertEqual(extract_emails("mailto%3Ainfo%40shop.fr"), {"info@shop.fr"})
         self.assertEqual(extract_emails("write to 20minutes@news.fr"), {"20minutes@news.fr"})   # real digits stay
 
+
+class DecodeTest(__import__("unittest").TestCase):
+    def test_unknown_charset_and_latin1(self):
+        self.assertEqual(fit._decode("Grüße".encode("utf-8"), "none"), "Grüße")       # LookupError case
+        self.assertEqual(fit._decode("Grüße".encode("cp1252"), "utf-8"), "Grüße")     # 0xfc in a 'utf-8' page
+        self.assertEqual(fit._decode("Grüße".encode("utf-8"), "ISO-8859-1"), "Grüße")
+
+    def test_redirect_unicode_error_is_site_issue(self):
+        class S:
+            def get(self, url, **kw):
+                raise UnicodeDecodeError("utf-8", b"\xfc", 0, 1, "invalid start byte")
+        self.assertEqual(fit.fetch(S(), "https://x.de/"), (None, ""))
+
+
+class ProtectedEmailTest(__import__("unittest").TestCase):
+    def test_joomla(self):
+        from research.emails import extract_emails
+        h = '<joomla-hidden-mail is-link="1" is-email="1" first="aW5mbw==" last="Z3Jvc2NoLWtvc21ldGlrLmRl" text="x">Diese E-Mail</joomla-hidden-mail>'
+        self.assertIn("info@grosch-kosmetik.de", extract_emails(h))
+
+    def test_entities(self):
+        from research.emails import extract_emails
+        h = '<a href="mailto:&#105;n&#102;&#111;&#64;&#109;a&#114;&#105;a&#45;&#102;&#114;is&#101;&#117;rs&#97;lon&#46;de">x</a>'
+        self.assertIn("info@maria-friseursalon.de", extract_emails(h))
+
+    def test_typo3(self):
+        from research.emails import extract_emails, _typo3_decrypt
+        enc = _typo3_decrypt("mailto:info@apotheke-x.de", 1)       # what TYPO3 writes with offset 1
+        h = f"<a href=\"javascript:linkTo_UnCryptMailto('{enc}');\">info(at)apotheke-x.de</a>"
+        self.assertIn("info@apotheke-x.de", extract_emails(h))
+        h2 = f'<a href="#" data-mailto-token="{_typo3_decrypt("mailto:shop@salon-y.de", -3)}" data-mailto-vector="3">x</a>'
+        self.assertIn("shop@salon-y.de", extract_emails(h2))
+
+    def test_rtl_and_js_and_punkt(self):
+        from research.emails import extract_emails
+        self.assertIn("info@parfum-z.de", extract_emails('<span style="unicode-bidi:bidi-override; direction: rtl;">ed.z-mufrap@ofni</span>'))
+        self.assertIn("kontakt@duft.de", extract_emails("<script>var a = 'kontakt' + '@' + 'duft.de';</script>"))
+        self.assertIn("info@laden.de", extract_emails("E-Mail: info (at) laden (punkt) de"))
+
+
+class SoftRedirectParkedTest(__import__("unittest").TestCase):
+    def test_js_and_meta_redirect(self):
+        h = '<html><body><script>window.document.location.href = "http://web218347.web37.dogado.de/joomla/";</script></body></html>'
+        self.assertEqual(fit.soft_redirect("https://kosmetik-oase-velbert.de/", h), "http://web218347.web37.dogado.de/joomla/")
+        h = '<meta http-equiv="refresh" content="5;URL=index.php"><body>x</body>'
+        self.assertEqual(fit.soft_redirect("https://eden-cosmetic-spa.de/", h), "https://eden-cosmetic-spa.de/index.php")
+        self.assertIsNone(fit.soft_redirect("https://x.de/", "<p>" + "Wort " * 300 + "</p><script>location.href='/a'</script>"))
+
+    def test_parked(self):
+        self.assertTrue(fit.is_parked("<title>Domain Default page</title><p>Plesk is a hosting panel with simple</p>"))
+        self.assertFalse(fit.is_parked("<p>" + "Parfum Shop Lattafa " * 50 + "</p>"))
+
+
+
+class SameBusinessTest(__import__("unittest").TestCase):
+    def test_rules(self):
+        from research.contacts_more import same_business, pick
+        self.assertTrue(same_business("info@yves-kosmetik.de", "yves-meerbusch.de"))
+        self.assertTrue(same_business("elmshorn@staggenborg.com", "staggenborg-apotheke.de"))
+        self.assertFalse(same_business("shafi.ghafoor@finance-solutions.net", "beauty-solutions.net"))
+        self.assertFalse(same_business("info@allianz.de", "staggenborg-apotheke.de"))
+        keep, how = pick({}, {"info@yves-kosmetik.de": "u", "x@gmail.com": "u"}, "yves-meerbusch.de")
+        self.assertEqual((set(keep), how), ({"info@yves-kosmetik.de"}, "same_business"))
+        keep, how = pick({"info@shop.de": "u"}, {"info@yves-kosmetik.de": "u"}, "shop.de")
+        self.assertEqual(how, "own")
+        self.assertEqual(pick({}, {"anitawordtmann@googlemail.com": "u"}, "anitawordtmann.de")[1], "free_mail")
