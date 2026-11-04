@@ -1,6 +1,6 @@
 import unittest
 
-from research.verify import reacher_verdict
+from research.verify import mx_suffix, reacher_verdict
 
 
 class ReacherVerdict(unittest.TestCase):
@@ -24,6 +24,13 @@ class ReacherVerdict(unittest.TestCase):
         self.assertEqual(reacher_verdict("safe", {}), "valid")
         self.assertEqual(reacher_verdict("invalid", {}), "invalid")
         self.assertEqual(reacher_verdict("unknown", {}), "unknown")
+
+
+class MxSuffix(unittest.TestCase):
+    def test_suffix(self):
+        self.assertEqual(mx_suffix(["mx00.ionos.de"]), "ionos.de")
+        self.assertEqual(mx_suffix([(10, "w0123.kasserver.com.")]), "kasserver.com")
+        self.assertEqual(mx_suffix([]), "")
 
 
 if __name__ == "__main__":

@@ -91,6 +91,41 @@ def truemail(email: str):
         return {"verdict": "unknown", "detail": f"truemail error: {str(e)[:100]}"}
 
 
+# Measured 4 Nov 2026 on ~4,500 checks from GitHub runners (cloud IPs):
+# these providers answer 90-100% "unknown": they refuse mailbox checks from cloud servers. Asking them again only
+# costs time, so the address is marked "risky / unverifiable" (usable only when published on the shop's own site).
+NO_ANSWER_MX = ("ionos.de", "t-online.de", "web.de", "gmx.net", "ovh.net", "agenturserver.de", "ispgateway.de",
+                "hostedemail.com", "yahoodns.net")
+# These reject probes from many cloud IPs with a hard "no" (All-Inkl: 305 normal info@ addresses "invalid", while the
+# same kind of address passed from other runner IPs). A rejection here is not trusted: unknown, retried later.
+UNTRUSTED_REJECT_MX = ("kasserver.com",)
+
+
+def mx_suffix(hosts) -> str:
+    """'mx00.ionos.de' -> 'ionos.de' (first MX host)."""
+    if not hosts:
+        return ""
+    h = hosts[0] if isinstance(hosts[0], str) else hosts[0][-1]
+    return ".".join(str(h).rstrip(".").lower().split(".")[-2:])
+
+
+_reoon_empty = []    # set once Reoon reports no credits left in this process
+
+
+def reoon_has_credits() -> bool:
+    if _reoon_empty:
+        return False
+    try:
+        b = requests.get("https://emailverifier.reoon.com/api/v1/check-account-balance/",
+                         params={"key": config.REOON_KEY}, timeout=20).json()
+        if (b.get("remaining_daily_credits") or 0) + (b.get("remaining_instant_credits") or 0) <= 0:
+            _reoon_empty.append(1)
+            return False
+    except (requests.RequestException, ValueError):
+        pass
+    return True
+
+
 def reacher_verdict(reach, smtp):
     """Reacher says "risky" for every role address (info@...) even when the server confirmed the mailbox.
     Mailbox confirmed on a domain that is not catch-all = valid (the role flag is kept on the contact).
@@ -130,6 +165,22 @@ def verify(email: str, use_reoon_on_unknown: bool = True, force: bool = False) -
         _cache[email] = res; _save()
         return res
     verdict, detail = "unknown", "no verifier configured"
+    sfx = mx_suffix(hosts)
+    if sfx in NO_ANSWER_MX:
+        verdict, detail = "risky", f"unverifiable: {sfx} refuses checks from cloud servers"
+        if use_reoon_on_unknown and config.REOON_KEY and reoon_has_credits():   # Reoon checks from its own servers
+            o = reoon(email)
+            st = (o or {}).get("status")
+            if st in ("safe", "valid"):
+                verdict, detail = "valid", detail + f" | reoon: {st}"
+            elif st in ("invalid", "disabled"):
+                verdict, detail = "invalid", detail + f" | reoon: {st}"
+            elif st:
+                detail += f" | reoon: {st}"
+        res.update(verdict=verdict, detail=detail)
+        _cache[email] = res
+        _save()
+        return res
     r = reacher(email)
     if r is not None:
         if "error" in r:
@@ -141,6 +192,8 @@ def verify(email: str, use_reoon_on_unknown: bool = True, force: bool = False) -
             detail = f"reacher: {reach}, catch_all={catch_all}, deliverable={smtp.get('is_deliverable')}"
             verdict = reacher_verdict(reach, smtp)
             res["catch_all"] = catch_all
+            if verdict == "invalid" and sfx in UNTRUSTED_REJECT_MX:
+                verdict, detail = "unknown", detail + f" | {sfx} rejects many cloud IPs: not trusted, retry"
     if verdict == "unknown":
         t = truemail(email)
         if t is not None:
@@ -148,7 +201,7 @@ def verify(email: str, use_reoon_on_unknown: bool = True, force: bool = False) -
             if t["verdict"] != "unknown":
                 verdict = t["verdict"]
                 res["catch_all"] = t.get("catch_all")
-    if verdict == "unknown" and use_reoon_on_unknown:
+    if verdict == "unknown" and use_reoon_on_unknown and config.REOON_KEY and reoon_has_credits():
         o = reoon(email)
         if o is not None:
             if "error" in o or "status" not in o:

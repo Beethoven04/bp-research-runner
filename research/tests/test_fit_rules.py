@@ -188,3 +188,14 @@ class ReadCapTest(__import__("unittest").TestCase):
         body = fit._read_capped(Drip(), 0.3)
         self.assertLess(time.time() - t, 1.0)
         self.assertTrue(body.startswith("x"))
+
+
+class EncodingPrefixTest(__import__("unittest").TestCase):
+    def test_no_leftovers(self):
+        from research.emails import extract_emails
+        self.assertEqual(extract_emails('<a href="mailto:%20info@beauty-courage.de">x</a>'), {"info@beauty-courage.de"})
+        self.assertEqual(extract_emails("Kontakt&#59;info@vesta-med.de"), {"info@vesta-med.de"})
+        self.assertEqual(extract_emails('{"html":"\\u003einfo@shop.se\\u003c"}'), {"info@shop.se"})
+        self.assertEqual(extract_emails("mailto%3Ainfo%40shop.fr"), {"info@shop.fr"})
+        self.assertEqual(extract_emails("write to 20minutes@news.fr"), {"20minutes@news.fr"})   # real digits stay
+

@@ -1,5 +1,7 @@
 """Email helpers: extraction from HTML, role-address detection, name normalisation, format patterns."""
+import html as htmlmod
 import re
+import urllib.parse
 import unicodedata
 
 EMAIL_RE = re.compile(r"[a-z0-9][a-z0-9._%+-]{0,63}@[a-z0-9-]+(?:\.[a-z0-9-]+)*\.[a-z]{2,24}", re.I)
@@ -70,11 +72,24 @@ def decode_cfemail(hex_str: str) -> str:
         return ""
 
 
+JS_ESCAPE = re.compile(r"\\u00[0-9a-f]{2}|\\x[0-9a-f]{2}", re.I)
+
+
+def clean_text(html: str) -> str:
+    """Decode the page before the email regex, so encoding leftovers do not stick to an address (4 Nov 2026: 435
+    contacts like "20info@..." from %20, "59info@..." from &#59;, "u003einfo@..." from \\u003e).
+    JS escapes -> space; URL-decoding twice (handles %2520); HTML entities unescaped."""
+    text = JS_ESCAPE.sub(" ", html)
+    for _ in range(2):
+        text = urllib.parse.unquote(text)
+    return htmlmod.unescape(text)
+
+
 def extract_emails(html: str) -> set:
     found = set()
     for m in re.finditer(r'data-cfemail="([0-9a-f]+)"', html, re.I):
         found.add(decode_cfemail(m.group(1)))
-    text = re.sub(r"&#64;|&commat;|%40", "@", html)
+    text = clean_text(html)
     found.update(EMAIL_RE.findall(text))
     for local, dom in OBFUSCATED_RE.findall(re.sub(r"<[^>]+>", " ", text)):
         found.add(f"{local}@{DOT_RE.sub('.', dom)}")
