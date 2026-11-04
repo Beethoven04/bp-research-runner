@@ -54,7 +54,12 @@ CONTACT_PATHS = ["/contact", "/kontakt", "/contact-us", "/kontakta-oss", "/konta
                  "/pages/contact", "/pages/kontakt", "/pages/about-us", "/pages/om-oss", "/sidor/kontakt"]
 BAD_LOCALS = re.compile(r"^(no-?reply|noreply|donotreply|hr|rx|jobs?|careers?|rekrytering|press|media|privacy|gdpr|dpo|"
                         r"kundklubb|newsletter|nyhetsbrev|abuse|postmaster|webmaster|security|invoice|faktura|"
-                        r"billing|ekonomi|accounting|returns?|retur)([._+-]|$)", re.I)
+                        r"billing|ekonomi|accounting|returns?|retur)([._+-]|$)"
+                        # 4 Nov 2026: not sales inboxes (privacy office, ad objection, bookkeeping, legal, invoices)
+                        # accounting/admin inboxes are NOT here: kept as last-resort role addresses (emails.ROLE_LOCALS)
+                        r"|^(datenschutz|dsgvo|rgpd|lopd|werbewiderspruch|widerspruch|abmahnung|bewerbung(en)?|"
+                        r"karriere|stellen|presse|recrutement|candidature|unsubscribe|abmelden|bounce)"
+                        r"|(datenschutz|dsgvo|rgpd|lopd|privacy|gdpr|werbewiderspruch)", re.I)
 CC_FIX = {"uk": "GB", "eu": "", "com": "", "net": "", "org": "", "shop": "", "store": "", "online": "", "co": "", "io": "",
           "info": "", "biz": "", "nu": "SE"}
 

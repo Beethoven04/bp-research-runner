@@ -20,6 +20,9 @@ ROLE_LOCALS = {
     "recruitment", "rekrytering", "ekonomi", "reception", "welcome", "general", "enquiries", "inquiries", "investors",
     "inkop", "innkjop", "indkob", "osto", "purchasing", "purchase", "buying", "buyer", "order", "orders", "shop",
     "store", "butik", "butikk", "webshop", "kundtjanst", "kundeservice", "asiakaspalvelu", "wholesale", "b2b",
+    # accounting / admin (4 Nov 2026): reachable business inboxes, used only when nothing better exists
+    "buchhaltung", "rechnung", "rechnungen", "verwaltung", "administration", "amministrazione", "fatture",
+    "ksiegowosc", "faktury", "comptabilite", "facturation", "contabilidad", "facturacion", "boekhouding",
 }
 # Free-mail providers: a small shop may publish one of these as its business address. Used only when the shop's own
 # site publishes it and no own-domain address exists (decided 3 Nov 2026, Louai). Stored as kind 'role'.
@@ -133,6 +136,9 @@ def decode_protected(html: str) -> set:
     return found
 
 
+PHONE_GLUE = re.compile(r"^\d{5,}(?=[a-z])")
+
+
 def extract_emails(html: str) -> set:
     found = set()
     for m in re.finditer(r'data-cfemail="([0-9a-f]+)"', html, re.I):
@@ -145,6 +151,7 @@ def extract_emails(html: str) -> set:
     out = set()
     for e in found:
         e = e.strip(".").lower()
+        e = PHONE_GLUE.sub("", e)      # "3164558info@..." : a phone number run into the address (4 Nov 2026)
         if not EMAIL_RE.fullmatch(e) or any(j in e for j in JUNK_DOMAINS):
             continue
         if re.search(r"\.(png|jpe?g|gif|svg|webp|css|js)$", e):

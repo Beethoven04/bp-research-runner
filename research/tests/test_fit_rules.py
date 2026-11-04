@@ -265,3 +265,19 @@ class SameBusinessTest(__import__("unittest").TestCase):
         keep, how = pick({"info@shop.de": "u"}, {"info@yves-kosmetik.de": "u"}, "shop.de")
         self.assertEqual(how, "own")
         self.assertEqual(pick({}, {"anitawordtmann@googlemail.com": "u"}, "anitawordtmann.de")[1], "free_mail")
+
+
+class NonSalesInboxTest(__import__("unittest").TestCase):
+    def test_bad_locals(self):
+        from research.emails import is_role
+        for e in ("werbewiderspruch", "lorealparislopd", "datenschutz", "rgpd", "bewerbung", "presse"):
+            self.assertTrue(fit.BAD_LOCALS.search(e), e)
+        for e in ("info", "einkauf", "loewen", "kontakt", "shop", "verkauf", "buchhaltung-hansa", "amministrazione"):
+            self.assertFalse(fit.BAD_LOCALS.search(e), e)
+        self.assertTrue(is_role("buchhaltung-hansa@apotheke-heepen.de"))      # ranks after named/info addresses
+
+    def test_phone_glue(self):
+        from research.emails import extract_emails
+        self.assertEqual(extract_emails("Tel 0316 3164558info@karin-fraenzer.de"), {"info@karin-fraenzer.de"})
+        self.assertEqual(extract_emails("2020shop@x.de"), {"2020shop@x.de"})      # 4 digits stay
+
