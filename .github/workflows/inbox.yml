@@ -1,0 +1,29 @@
+name: inbox
+# Reads new mail in the sending mailbox and posts it to the n8n workflow "BP · 4 Inbox" (21 Nov 2026).
+# Replaces the n8n IMAP trigger: TransIP drops idle IMAP connections after 30 s. Mail stays unread.
+# Logs print counts only (this repo is public).
+# Secrets needed: DATABASE_URL (already set), IMAP_USER, IMAP_PASSWORD, INBOX_WEBHOOK_URL, INBOX_WEBHOOK_KEY.
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+concurrency: {group: inbox, cancel-in-progress: false}
+jobs:
+  poll:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      IMAP_USER: ${{ secrets.IMAP_USER }}
+      IMAP_PASSWORD: ${{ secrets.IMAP_PASSWORD }}
+      INBOX_WEBHOOK_URL: ${{ secrets.INBOX_WEBHOOK_URL }}
+      INBOX_WEBHOOK_KEY: ${{ secrets.INBOX_WEBHOOK_KEY }}
+      DB_POOL: transaction
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12"}
+      - run: pip install -q "psycopg[binary]==3.2.13"
+      - name: read new mail
+        working-directory: research
+        run: python -m research.inbox_poll
