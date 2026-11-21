@@ -2,7 +2,8 @@
 
 Verified = primary contact is `valid`, or `risky` but published on the shop's own site (same email rule as the
 `ready_leads` view). Excluded domains/emails (customers, competitors, opt-outs) are left out. Unlike `ready_leads`,
-this export ignores the country email rule and the offer rule, so Louai can choose who to contact first.
+this export ignores the offer rule, so Louai can choose who to contact first. Every country can be emailed
+(4 Nov 2026 decision); "Law confirmed" is an info flag from config countries.law_confirmed.
 
 Tabs: "All leads" (filters on every column), "Summary" (country x type), one tab per country.
 Run: python -m research.export_leads   ->  data/verified_leads_<date>.xlsx
@@ -18,15 +19,17 @@ from . import db
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 
+# Type = business type only (4 Nov 2026). How they sell (store / online) is the "Sales channel" column, and
+# "sells Arabic perfume" is in "Sells". Search-found sites without a clearer type are "Retailer".
 TYPE = {
-    "online_store": "E-commerce", "arabic_perfume_seller": "E-commerce", "marketplace": "E-commerce",
-    "marketplace_seller": "E-commerce",
-    "small_retailer": "Retailer", "perfumery": "Retailer", "beauty_store": "Retailer", "drugstore": "Retailer",
-    "pharmacy": "Retailer",
+    "pharmacy": "Pharmacy", "drugstore": "Drugstore", "perfumery": "Perfumery", "beauty_store": "Beauty store",
+    "beauty_salon": "Salon", "wholesaler": "Wholesaler", "distributor": "Distributor (contact last)",
     "retail_chain": "Chain", "drugstore_chain": "Chain", "pharmacy_chain": "Chain",
-    "wholesaler": "Wholesaler", "distributor": "Distributor (contact last)",
-    "beauty_salon": "Salon",
+    "marketplace": "Marketplace", "marketplace_seller": "Marketplace",
+    "small_retailer": "Retailer", "online_store": "Retailer", "arabic_perfume_seller": "Retailer",
 }
+CHANNEL = {"store": "Physical store", "online": "Online shop", "store+online": "Store + online shop",
+           "unknown": "Unknown"}
 
 COUNTRY = {
     "AL": "Albania", "AT": "Austria", "BA": "Bosnia and Herzegovina", "BE": "Belgium", "BG": "Bulgaria",
@@ -39,11 +42,14 @@ COUNTRY = {
 }
 
 SQL = """
-select c.priority, c.name, c.domain, c.country, c.city, c.segment, c.is_chain, c.store_count, c.sells_arabic, c.sells_perfume,
+select c.id as company_id, c.priority, c.name, c.domain, c.country, c.city, c.segment, c.is_chain, c.store_count, c.sells_arabic, c.sells_perfume,
        c.range_status, c.gap_brands, c.email_rule, c.first_source,
+       ch.value as channel,
        k.email, k.kind, k.name as contact_name, k.role_title, k.verdict, k.catch_all, k.source_url, k.checked_at
 from companies c
 join contacts k on k.company_id = c.id and k.is_primary
+left join lateral (select e.value from company_evidence e where e.company_id = c.id and e.fact = 'sales_channel'
+                   order by e.fetched_at desc limit 1) ch on true
 where c.status = 'fit'
   and (k.verdict = 'valid' or (k.verdict = 'risky' and k.source_url like '%%' || c.domain || '%%'))
   and not exists (select 1 from exclusions x where x.tenant_id = c.tenant_id
@@ -51,14 +57,15 @@ where c.status = 'fit'
 order by c.country, c.priority desc, c.name
 """
 
-COLS = ["Country", "Type", "Segment (detail)", "Business", "Website", "City", "Email", "Email kind", "Contact name",
+COLS = ["Country", "Type", "Sales channel", "Segment (detail)", "Business", "Website", "City", "Email", "Email kind", "Contact name",
         "Contact role", "Email check", "Sells", "What they don't sell", "Range check", "Chain (stores)",
-        "Can email now", "Priority", "Email found on", "Email checked"]
+        "Can email now", "Law confirmed", "Priority", "Email found on", "Email checked"]
+CAN, LAW = COLS.index("Can email now"), COLS.index("Law confirmed")
 WIDTH = {"Business": 30, "Website": 30, "Email": 34, "What they don't sell": 45, "Sells": 20, "Email found on": 40,
          "Segment (detail)": 22, "Country": 16}
 
 
-def _row(r):
+def _row(r, law):
     seg = r["segment"] or ""
     kind = "Named person" if r["kind"] == "named" else "Role address (info@...)"
     check = "Valid" if r["verdict"] == "valid" else ("Risky (catch-all)" if r["catch_all"] else "Risky")
@@ -66,15 +73,16 @@ def _row(r):
         offer = ", ".join(r["gap_brands"]) or "(sells all our brands)"
     else:
         offer = "Unknown (range not read)"
-    sells = ("Arabic perfume" if r["sells_arabic"] else "Other perfume" if r["sells_perfume"]
+    sells = ("Arabic perfume" if r["sells_arabic"] or seg == "arabic_perfume_seller" else "Other perfume" if r["sells_perfume"]
              else "Beauty products only")
     chain = (f"Yes ({r['store_count']})" if r["store_count"] else "Yes") if r["is_chain"] else "No"
-    can = "Yes" if r["email_rule"] == "opt_out" else "Law not confirmed"
+    can = "Yes" if r["email_rule"] == "opt_out" else "No"
+    lawc = "Yes" if r["country"] in law else "No"
     checked = r["checked_at"].strftime("%Y-%m-%d") if r["checked_at"] else ""
     return [COUNTRY.get(r["country"], r["country"]), TYPE.get(seg, seg.replace("_", " ").title() or "Unknown"),
-            seg.replace("_", " "), r["name"], f"https://{r['domain']}" if r["domain"] else "", r["city"] or "",
+            CHANNEL.get(r["channel"] or "unknown", "Unknown"), seg.replace("_", " "), r["name"], f"https://{r['domain']}" if r["domain"] else "", r["city"] or "",
             r["email"], kind, r["contact_name"] or "", r["role_title"] or "", check,
-            sells, offer, r["range_status"], chain, can, r["priority"],
+            sells, offer, r["range_status"], chain, can, lawc, r["priority"],
             r["source_url"], checked]
 
 
@@ -96,7 +104,8 @@ def main():
         cur = c.cursor()
         cur.execute(SQL)
         data = cur.fetchall()
-    rows = [_row(r) for r in data]
+        law = set((db.cfg(c, "countries") or {}).get("law_confirmed") or [])
+    rows = [_row(r, law) for r in data]
 
     wb = Workbook()
     ws = wb.active
@@ -109,15 +118,27 @@ def main():
     sm = wb.create_sheet("Summary")
     sm.append([f"Built {dt.datetime.now():%Y-%m-%d %H:%M} from the live database. {len(rows)} verified emails."])
     sm.append([])
-    sm.append(["Country"] + types + ["Total", "Can email now"])
+    sm.append(["Country"] + types + ["Total", "Can email now", "Law confirmed"])
     for c_ in sm[3]:
         c_.font = Font(bold=True)
     for ctry in countries:
         sub = [r for r in rows if r[0] == ctry]
         sm.append([ctry] + [sum(r[1] == t for r in sub) for t in types]
-                  + [len(sub), sum(r[15] == "Yes" for r in sub)])
+                  + [len(sub), sum(r[CAN] == "Yes" for r in sub), sum(r[LAW] == "Yes" for r in sub)])
     sm.append(["Total"] + [sum(r[1] == t for r in rows) for t in types]
-              + [len(rows), sum(r[15] == "Yes" for r in rows)])
+              + [len(rows), sum(r[CAN] == "Yes" for r in rows), sum(r[LAW] == "Yes" for r in rows)])
+    for c_ in sm[sm.max_row]:
+        c_.font = Font(bold=True)
+    # second table: sales channel x type (how each kind of business sells)
+    chans = [v for v in CHANNEL.values() if any(r[2] == v for r in rows)]
+    sm.append([])
+    sm.append(["Type"] + chans + ["Total"])
+    for c_ in sm[sm.max_row]:
+        c_.font = Font(bold=True)
+    for t in types:
+        sub = [r for r in rows if r[1] == t]
+        sm.append([t] + [sum(r[2] == ch for r in sub) for ch in chans] + [len(sub)])
+    sm.append(["Total"] + [sum(r[2] == ch for r in rows) for ch in chans] + [len(rows)])
     for c_ in sm[sm.max_row]:
         c_.font = Font(bold=True)
     sm.column_dimensions["A"].width = 24

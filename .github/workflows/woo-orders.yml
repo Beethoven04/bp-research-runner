@@ -1,0 +1,27 @@
+name: woo orders
+# Copies WooCommerce orders into Supabase every 30 min for the dashboard's Orders page (21 Nov 2026).
+# Read-only on WooCommerce. Logs print counts only (this repo is public).
+# Secrets needed: DATABASE_URL (already set), WC_URL, WC_KEY, WC_SECRET (read-only WooCommerce key).
+on:
+  schedule:
+    - cron: "7,37 * * * *"
+  workflow_dispatch:
+concurrency: {group: woo-orders, cancel-in-progress: false}
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      WC_URL: ${{ secrets.WC_URL }}
+      WC_KEY: ${{ secrets.WC_KEY }}
+      WC_SECRET: ${{ secrets.WC_SECRET }}
+      DB_POOL: transaction
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12", cache: pip, cache-dependency-path: research/requirements.txt}
+      - run: pip install -q -r research/requirements.txt
+      - name: sync orders changed in the last 3 days
+        working-directory: research
+        run: python -m research.woo_orders --days 3

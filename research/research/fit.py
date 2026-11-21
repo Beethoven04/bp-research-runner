@@ -468,6 +468,11 @@ def check(company: dict, our_brands: list, arabic: list):
             if e not in out["contacts"]:
                 out["evidence"].append(("other_domain_email", e, u, "not on the shop's own domain; not used"))
     out["real_domain"] = real
+    # sales channel: physical store / online shop / both / unknown (4 Nov 2026), from the pages already read
+    from . import channel
+    ch, ch_url, ch_snip = channel.decide(pages, company.get("first_source") == "osm")
+    out["sales_channel"] = ch
+    out["evidence"].append(("sales_channel", ch, ch_url or final, ch_snip))
     country_unclear = False
     if not cc and not lang_decides:
         # generic TLD in English (or no language): phone prefix / currency must confirm the country
