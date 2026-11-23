@@ -1,6 +1,7 @@
 name: inbox
 # Reads new mail in the sending mailbox and posts it to the n8n workflow "BP · 4 Inbox" (21 Nov 2026).
 # Replaces the n8n IMAP trigger: TransIP drops idle IMAP connections after 30 s. Mail stays unread.
+# Started every 5 min by n8n (BP · 4 Inbox, workflow_dispatch, 22 Nov 2026); the cron below is only a backup.
 # Logs print counts only (this repo is public).
 # Secrets needed: DATABASE_URL (already set), IMAP_USER, IMAP_PASSWORD, INBOX_WEBHOOK_URL, INBOX_WEBHOOK_KEY.
 on:

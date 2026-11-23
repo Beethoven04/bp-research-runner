@@ -22,6 +22,7 @@ import json
 import os
 import re
 import sys
+import urllib.error
 import urllib.request
 
 from . import config, db
@@ -104,9 +105,16 @@ def post(messages):
                                  data=json.dumps({"messages": messages}).encode(),
                                  headers={"Content-Type": "application/json", "User-Agent": "curl/8.7.1",
                                           "X-BP-Key": _env("INBOX_WEBHOOK_KEY")})
-    with urllib.request.urlopen(req, timeout=120) as r:
-        if r.status != 200:
-            raise RuntimeError(f"webhook answered {r.status}")
+    try:
+        with urllib.request.urlopen(req, timeout=120) as r:
+            if r.status != 200:
+                raise RuntimeError(f"webhook answered {r.status}")
+    except urllib.error.HTTPError as e:
+        # public log: say who refused (n8n key check or Cloudflare), never the body itself
+        body = e.read(2000).decode("utf-8", "replace")
+        who = ("n8n: wrong key" if "Authorization data is wrong" in body else
+               "cloudflare" if "cloudflare" in body.lower() or e.headers.get("cf-mitigated") else "unknown")
+        raise SystemExit(f"inbox: webhook answered {e.code} ({who}, cf-ray {e.headers.get('cf-ray', '-')})")
 
 
 def run(dry=False):
