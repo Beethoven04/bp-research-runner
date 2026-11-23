@@ -114,7 +114,15 @@ def post(messages):
         body = e.read(2000).decode("utf-8", "replace")
         who = ("n8n: wrong key" if "Authorization data is wrong" in body else
                "cloudflare" if "cloudflare" in body.lower() or e.headers.get("cf-mitigated") else "unknown")
-        raise SystemExit(f"inbox: webhook answered {e.code} ({who}, cf-ray {e.headers.get('cf-ray', '-')})")
+        msg = f"inbox: webhook answered {e.code} ({who}, cf-ray {e.headers.get('cf-ray', '-')})"
+        if who == "cloudflare":
+            # Cloudflare blocks GitHub runners (23 Nov 2026, WAF skip rule asked from the n8n host owner).
+            # Warn instead of failing so GitHub stops sending failure emails every 5 min. State does not move,
+            # so the same mail is posted again on the next run once the block is lifted.
+            print(f"::warning::{msg}; mail kept for the next run")
+            return False
+        raise SystemExit(msg)
+    return True
 
 
 def run(dry=False):
@@ -135,8 +143,9 @@ def run(dry=False):
             raw = next((x[1] for x in d if isinstance(x, tuple)), None)
             if raw:
                 msgs.append({"uid": uid, **parse(raw)})
-        if msgs and not dry:
-            post(msgs)
+        if msgs and not dry and not post(msgs):
+            m.logout()
+            return
         if uids and not dry:
             save_state(c, {"uidvalidity": validity, "last_uid": uids[-1]})
     m.logout()
